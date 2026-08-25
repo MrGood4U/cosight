@@ -1,0 +1,170 @@
+# Cosight
+
+Cosight 是一个 Windows 桌面端实时多模态对话客户端。它可以把兼容的实时模型连接到用户的麦克风、共享屏幕、语音输出和智能体控制的屏幕绘画能力上。用户还可以在不同的 Role 角色之间灵活切换，让每次对话拥有不同的身份、行为、语种、音色、知识和能力。
+
+English version: [README.md](README.md)
+
+## 产品定位
+
+Cosight 的核心是“对话 + 屏幕视觉 + 语音交互 + 屏幕交互”：
+
+- 模型可以听见用户通过麦克风说的话。
+- 模型可以看见用户分享的整个屏幕或指定窗口。
+- 模型可以通过语音回应，用户可以选择麦克风和音频输出设备。
+- 在 Role 授权绘画能力并分享整个屏幕后，模型可以在用户电脑的实际屏幕上绘制标记、箭头、圆圈、方框等图形，并接收包含绘制结果的后续屏幕帧，从而检查和修正自己的绘画。
+- Role 可以决定模型能否使用绘画、写字、听觉、语音输出和主动性等能力。
+- Core 字幕功能可以把模型的语音回复转换为字幕并显示在屏幕上。
+
+Cosight 不把智能体固定成一种身份。用户可以创建多个 Role，并在不同对话开始前选择不同角色。每个角色都可以拥有独立的身份、目标、行为、对话流程、约束、语种、音色、知识和能力组合。
+
+## 主要能力
+
+- **实时对话**：通过 Python bridge 使用 WebSocket 连接 Qwen Omni Realtime 或其他兼容的实时模型。
+- **屏幕视觉**：分享整个显示器或窗口，让模型理解当前画面。
+- **听觉与语音输出**：使用选定的麦克风作为输入，并通过选定的 Windows 音频输出设备播放模型语音。
+- **屏幕绘画**：在整个屏幕捕获模式下，模型可以使用透明桌面覆盖层绘制图形，并看到自己的绘制结果。
+- **写字能力**：由 Role 授权，模型可以在实际屏幕上写入文字、标签和提示。
+- **Core 字幕**：Settings 中的核心开关，用于显示模型语音回复的字幕，不需要模型额外调用工具。
+- **Role 角色系统**：创建和编辑可复用的角色身份与行为配置。
+- **多个模型配置**：为每个模型保存自定义别名、实时 URL、模型名称和 API Key，并选择当前使用的模型。
+- **聊天上下文导入导出**：可以导出文本消息和能力调用记录，也可以导入之前的聊天记录作为上下文。导出文件不会嵌入屏幕截图或音视频媒体文件。
+
+### 屏幕捕获说明
+
+绘画、写字和 Core 字幕需要分享整个显示器，因为透明覆盖层需要准确定位在真实桌面上。窗口捕获可以用于视觉理解，但不会启用依赖全屏坐标的透明覆盖层能力。
+
+## 如何开始试用
+
+安装 Windows 安装包后，按下面步骤操作：
+
+1. 打开左侧的 **模型** 页面，添加一个兼容的实时模型配置。填写模型别名、实时 URL、模型名称和 API Key，然后选择该模型。
+2. 打开 **角色** 页面，选择 `Default` 或官方示例角色。需要不同的身份和行为时，可以新增自己的角色。
+3. 打开 **设置** 页面，选择麦克风、音频输出设备和界面语言。对着麦克风说话，确认音量条能够正常变化。
+4. 返回 **聊天会话** 页面，选择一个 Role 角色。
+5. 点击 **分享屏幕**，选择要分享的显示器或窗口。
+6. 等待屏幕状态显示加载完成。
+7. 点击 **开始聊天**，然后正常说话即可。
+
+停止聊天只会结束实时模型会话，不会自动停止屏幕分享；屏幕分享可以独立控制。
+
+## 从源码运行
+
+### 开发环境要求
+
+- Windows 10 或更高版本
+- Node.js 和 npm
+- Python 3.12 或更高版本
+- 一个兼容的实时模型服务地址和 API Key
+
+安装 JavaScript 和 Python 依赖：
+
+```powershell
+npm ci
+python -m pip install -r requirements.txt
+```
+
+启动开发客户端：
+
+```powershell
+npm run dev
+```
+
+如果系统中不能通过 `python` 找到 Python，可以指定 Python 解释器：
+
+```powershell
+$env:COSIGHT_PYTHON = "C:\Path\to\python.exe"
+npm run dev
+```
+
+只构建前端生产文件：
+
+```powershell
+npm run build
+```
+
+## 自行编译 Windows 安装包
+
+项目提供了一键 Windows 打包脚本。脚本会自动完成以下工作：
+
+1. 创建独立的打包虚拟环境。
+2. 安装 Python bridge 及其依赖。
+3. 使用 PyInstaller 打包 realtime bridge 和 prompt preview 两个 Python 入口。
+4. 构建 Vite 前端。
+5. 使用 Electron Builder 生成 x64 NSIS 安装程序。
+6. 把 Python 运行时、模型依赖、官方示例角色和能力 prompt 一起放入安装包。
+
+执行普通打包：
+
+```powershell
+npm run package:win
+```
+
+打包前清理旧产物：
+
+```powershell
+npm run package:win -- -Clean
+```
+
+如果打包用的 Python 不在 PATH 中：
+
+```powershell
+$env:COSIGHT_BUILD_PYTHON = "C:\Path\to\python.exe"
+npm run package:win
+```
+
+安装包会生成在：
+
+```text
+release/Cosight-Setup-<version>-x64.exe
+```
+
+最终用户安装后不需要另外安装 Python、Node.js、npm、pip 或项目依赖。打包机器本身仍然需要 Node.js、npm 和 Python。
+
+面向公开发布时，还应补充正式的应用图标和 Windows 代码签名证书。当前打包流程适合开发测试和内部分发。
+
+## 项目目录
+
+```text
+electron/                 Electron 主进程、preload 和桌面透明覆盖层
+src/                      React 前端和本地化 UI
+python/                   Qwen Omni 实时 bridge 和 prompt preview
+abilities/                可扩展能力及其 prompt、运行时代码
+  drawing/                绘画 prompt 和绘画运行时契约
+  writing/                写字 prompt 和写字运行时契约
+  initiative/             客户端主动性运行时
+data/sample-roles.json    随应用发布的官方示例角色
+packaging/                PyInstaller 配置
+scripts/                  打包和示例角色维护脚本
+```
+
+未来新增能力必须放在根目录的 `abilities/` 下，并为每项能力建立独立文件夹。读屏幕、听和说属于 Core 的基础实时链路，不需要单独拆成能力目录。
+
+## 用户数据、日志和安全
+
+Cosight 的用户数据保存在：
+
+```text
+%APPDATA%\cosight
+```
+
+这里包括模型配置、角色、知识文件和日志。API Key 通过 Electron 的 Windows 本地保护存储机制保存。不要把用户配置、API Key、日志或本地知识文件提交到 Git。
+
+日志目录是：
+
+```text
+%APPDATA%\cosight\logs
+```
+
+日志会记录协议事件、能力调用结果、异常、进程退出和数据长度，但不会记录原始音频或视频帧。
+
+## 官方示例角色
+
+官方示例角色维护在 `data/sample-roles.json`，打包时会随应用一起进入安装包，帮助新用户快速了解 Cosight 的角色系统。
+
+开发时如果需要同步示例角色：
+
+```powershell
+npm run sync:sample-roles
+```
+
+示例角色不能包含 API Key、用户知识文件或本机绝对路径。

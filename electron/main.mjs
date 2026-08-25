@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
 const configPath = join(app.getPath('userData'), 'cosight-config.json')
-const sampleRolesPath = join(__dirname, '..', 'data', 'sample-roles.json')
+const sampleRolesPath = isDev
+  ? join(__dirname, '..', 'data', 'sample-roles.json')
+  : join(process.resourcesPath, 'data', 'sample-roles.json')
 const ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing', 'writing', 'initiative']
 const ROLE_ABILITY_ALIASES = { subtitles: 'writing' }
 // Voices currently documented for the Qwen3.5-Omni and Qwen3.5-Omni-Realtime
@@ -362,8 +364,9 @@ function runPromptPreview(roleInput) {
     speakingEnabled: abilities.has('speaking'),
     initiativeEnabled: abilities.has('initiative') && abilities.has('listening') && abilities.has('speaking'),
   })
-  const { command, args } = pythonCommand()
+  const { command, args, cwd, packaged } = pythonCommand('cosight-prompt-preview')
   const script = join(__dirname, '..', 'python', 'prompt_preview.py')
+  const invocationArgs = packaged ? args : [...args, '-u', script]
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
@@ -375,8 +378,8 @@ function runPromptPreview(roleInput) {
     }
     let previewProcess
     try {
-      previewProcess = spawn(command, [...args, '-u', script], {
-        cwd: join(__dirname, '..'),
+      previewProcess = spawn(command, invocationArgs, {
+        cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: { ...process.env },
@@ -594,10 +597,24 @@ function sendBridge(command) {
   }
 }
 
-function pythonCommand() {
+function pythonCommand(entryPoint = 'cosight-bridge') {
+  if (app.isPackaged) {
+    const executable = process.platform === 'win32' ? `${entryPoint}.exe` : entryPoint
+    return {
+      command: join(process.resourcesPath, 'python', entryPoint, executable),
+      args: [],
+      cwd: join(process.resourcesPath, 'python', entryPoint),
+      packaged: true,
+    }
+  }
   const configured = process.env.COSIGHT_PYTHON
-  if (configured) return { command: configured, args: [] }
-  return { command: process.platform === 'win32' ? 'python' : 'python3', args: [] }
+  if (configured) return { command: configured, args: [], cwd: join(__dirname, '..'), packaged: false }
+  return {
+    command: process.platform === 'win32' ? 'python' : 'python3',
+    args: [],
+    cwd: join(__dirname, '..'),
+    packaged: false,
+  }
 }
 
 function startBridge(config, modelProfile, apiKey) {
@@ -610,10 +627,11 @@ function startBridge(config, modelProfile, apiKey) {
     return { ok: false, error: '请先在 Settings 中填写 API Key。' }
   }
 
-  const { command, args } = pythonCommand()
+  const { command, args, cwd, packaged } = pythonCommand('cosight-bridge')
   const script = join(__dirname, '..', 'python', 'qwen_bridge.py')
-  bridgeProcess = spawn(command, [...args, '-u', script], {
-    cwd: join(__dirname, '..'),
+  const invocationArgs = packaged ? args : [...args, '-u', script]
+  bridgeProcess = spawn(command, invocationArgs, {
+    cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     env: {
@@ -625,7 +643,7 @@ function startBridge(config, modelProfile, apiKey) {
   debugLog('bridge.process.spawned', {
     pid: bridgeProcess.pid,
     command,
-    args: [...args, '-u', script],
+    args: invocationArgs,
     model: modelProfile.name,
     url: modelProfile.url,
     screenVisionEnabled: Boolean(config?.screenVisionEnabled),

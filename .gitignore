@@ -8,7 +8,9 @@ env/
 dist/
 out/
 release/
+build/
 .electron-cache/
+.venv-packaging/
 
 # Runtime logs and generated diagnostics
 logs/

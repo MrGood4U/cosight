@@ -245,7 +245,7 @@ export default {
     overlayCanvasFailed: '透明画布窗口启动失败。',
     overlayWritingFailed: '透明写字层启动失败。',
     previewFailed: '屏幕预览播放失败：{message}',
-    addModelFirst: '请先在设置中添加并选择一个自定义模型。',
+    addModelFirst: '请先在模型页面添加并选择一个模型。',
     apiKeyFirst: '当前模型没有 API Key，请先编辑模型配置。',
     bridgeStartFailed: '无法启动 Python bridge',
     pythonBridgeError: 'Python bridge 错误',

@@ -2,18 +2,13 @@
 
 ## 产品定位
 
-- Cosight 的核心产品与 interview 无关。
 - 核心方向是：通用对话、屏幕视觉理解，以及屏幕绘画能力。
-- 核心界面和核心文案不得出现 `Interview`、`Interviewer` 或面试语义。
-- 核心入口使用 `Chat` / `Conversation` 语义，例如 `Start chat`。
-- Interview 是建立在核心对话与屏幕运行时之上的可选插件，不属于核心聊天流程。Interview 插件的具体定义遵循之前共享的 ChatGPT 方案。
 
 ## 架构原则
 
 - Cosight 是 Windows 上的多模态实时运行时：AI 能听见用户、看见用户分享的屏幕，并通过语音回应。
 - 采用 `Core + Plugin` 架构。Core 提供对话、屏幕捕获、实时模型连接、音频输入输出和会话状态；Plugin 在 Core 之上增加领域工作流。
 - 插件不得反过来定义 Core 的产品身份，也不得把插件专属文案、流程或数据模型硬编码进核心聊天页面。
-- Interview 是第一批插件候选。它负责面试流程、面试提示词、动态追问策略以及面试后的结构化会话产物；Core 只提供通用的对话和屏幕运行能力。
 - 后续需要分析或评审时，优先由外部文本 Agent 消费结构化的 `Session Artifact`，不要把分析逻辑耦合到实时会话核心。
 
 ## MVP 优先级
@@ -43,6 +38,8 @@
 - 当前先使用 Python 对接 Qwen Omni Realtime。
 - 客户端负责麦克风、屏幕捕获、设备选择、音频播放和会话 UI。
 - Python bridge 负责实时模型连接；模型通过 WebSocket 通信。
+- Windows 发布必须把 Python runtime、`dashscope`、知识文件解析依赖和两个 Python 入口一起打包进安装包；最终用户不应被要求单独安装 Python、Node.js、pip 或其他运行时依赖。`scripts/package-windows.ps1` 是标准的一键打包入口，生产环境 Electron 必须启动打包后的 bridge executable，而不是依赖系统 `python`。
+- 打包资源必须包含 `data/sample-roles.json` 以及能力目录中的模型 prompt；用户配置、API Key、日志和知识文件继续保存在 `%APPDATA%\\cosight`，不得作为安装包资源或 Git 文件提交。
 - 设置中允许用户添加多个自定义模型，每个模型包含 URL、API Key 和 model name，并允许用户选择当前模型。
 - 模型配置属于 Core，但必须通过左侧 `Models/模型` 独立页面管理；该页面负责添加、编辑、删除和选择当前模型。Settings/设置页面只管理设备、连接和行为开关，不放置模型管理表单。
 - Settings/设置必须是左侧导航进入的独立主页面，不使用右侧抽屉或侧边设置面板；页面内集中管理设备、连接、界面语言和对话行为开关。
@@ -59,7 +56,7 @@
 
 ## Role 角色系统
 
-- Role 是 Core 的可复用 prompt profile，不改变 Cosight 的产品定位，也不是 Interview 专属功能。
+- Role 是 Core 的可复用 prompt profile。
 - Chat Session 顶部提供角色选择；默认角色为 `Default`。聊天进行中角色选择必须禁用，角色只在下一次聊天启动时生效。
 - Roles 页面负责新增、编辑和删除角色；Chat Session 的选择菜单可以通过加号跳转到同一个新增角色页面。
 - 角色包含姓名、身份、目的、行动方式、对话流程、约束、语种、音色、能力和知识。

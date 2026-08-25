@@ -245,7 +245,7 @@ export default {
     overlayCanvasFailed: 'Transparent canvas failed to start.',
     overlayWritingFailed: 'Writing overlay failed to start.',
     previewFailed: 'Screen preview failed: {message}',
-    addModelFirst: 'Please add and select a custom model in Settings first.',
+    addModelFirst: 'Please add and select a model on the Models page first.',
     apiKeyFirst: 'This model has no API Key. Edit the model configuration first.',
     bridgeStartFailed: 'Unable to start Python bridge',
     pythonBridgeError: 'Python bridge error',

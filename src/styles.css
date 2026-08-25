@@ -196,6 +196,10 @@ h1 { font-size: 22px; letter-spacing: -0.025em; font-weight: 600; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #737e8d; box-shadow: 0 0 0 3px rgba(115, 126, 141, 0.08); }
 .status-dot.green { background: #53d4a5; box-shadow: 0 0 0 3px rgba(83, 212, 165, 0.11); }
 .header-actions { display: flex; gap: 10px; align-items: center; }
+.chat-setup-notice { display: flex; align-items: center; gap: 9px; margin: -5px 1px 18px 4px; padding: 10px 12px; border: 1px solid #4b4a78; border-radius: 6px; background: #171b32; color: #cdd3ff; font-size: 12px; line-height: 1.45; }
+.chat-setup-notice > svg { flex: 0 0 auto; color: #9daaff; }
+.chat-setup-notice > span { min-width: 0; flex: 1; }
+.chat-setup-notice .text-link { flex: 0 0 auto; font-size: 12px; }
 .outline-button, .primary-button, .clear-button, .small-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 37px; padding: 0 14px; border-radius: 6px; font-size: 13px; font-weight: 500; }
 .outline-button { border: 1px solid #3a4553; background: #151c25; color: #e5ebf2; }
 .outline-button:hover, .outline-button.selected { border-color: #6877d6; background: #202a48; }

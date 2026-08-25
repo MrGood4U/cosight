@@ -1981,6 +1981,11 @@ function App() {
     Connected: t('status.connected'),
     'Bridge error': t('status.bridgeError'),
   }[connection] || connection
+  const startChatBlockedReason = !selectedModel
+    ? t('notices.addModelFirst')
+    : !selectedModel.hasApiKey
+      ? t('notices.apiKeyFirst')
+      : ''
 
   useEffect(() => {
     window.clearInterval(initiativeSilenceTimerRef.current)
@@ -2055,9 +2060,10 @@ function App() {
                 {screenLoading ? t('screen.loading') : screenSharing ? <><span className="screen-share-default-label">{t('screen.sharing')}</span><span className="screen-share-hover-label">{t('screen.stopSharing')}</span></> : t('screen.share')}
               </button>
               <RoleSelector roles={roles} selectedRole={selectedRole} selectedRoleId={selectedRoleId} onSelect={selectRole} onAdd={() => openNewRole('chatSession')} disabled={isChatActive} t={t} />
-              {isChatActive ? <button className="primary-button stop-button" onClick={stopChat}><Square size={15} fill="currentColor" /> {t('chat.stop')}</button> : <button className="primary-button" onClick={startChat} disabled={isStarting || screenLoading} aria-disabled={isStarting || screenLoading} title={screenLoading ? t('screen.loading') : undefined}><Play size={15} fill="currentColor" />{isStarting ? t('chat.starting') : t('chat.start')}</button>}
+              {isChatActive ? <button className="primary-button stop-button" onClick={stopChat}><Square size={15} fill="currentColor" /> {t('chat.stop')}</button> : <button className="primary-button" onClick={startChat} disabled={isStarting || screenLoading || Boolean(startChatBlockedReason)} aria-disabled={isStarting || screenLoading || Boolean(startChatBlockedReason)} title={screenLoading ? t('screen.loading') : startChatBlockedReason || undefined}><Play size={15} fill="currentColor" />{isStarting ? t('chat.starting') : t('chat.start')}</button>}
             </div>
           </div>
+          {startChatBlockedReason && !isChatActive && <div className="chat-setup-notice" role="status"><Sparkles size={15} /><span>{startChatBlockedReason}</span><button type="button" className="text-link" onClick={() => setActiveNav('models')}>{t('nav.models')}</button></div>}
 
           <section className="screen-card">
             <div className="screen-card-header" aria-busy={screenLoading}><span>{screenLoading ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <Monitor size={15} aria-hidden="true" />} {screenLoading ? t('screen.loading') : screenSharing ? t('screen.sharedDesktop') : t('screen.noScreenSelected')}</span></div>
