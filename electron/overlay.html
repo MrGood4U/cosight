@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cosight overlay</title>
+    <style>
+      html, body, canvas {
+        width: 100%;
+        height: 100%;
+      }
+
+      html, body {
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        pointer-events: none;
+      }
+
+      canvas {
+        display: block;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" aria-label="Cosight agent drawing and text overlay"></canvas>
+    <script>
+      const canvas = document.getElementById('canvas')
+      const context = canvas.getContext('2d')
+      let strokes = []
+      const captions = { core: null, writing: null }
+      const captionTimers = { core: null, writing: null }
+
+      function clamp(value, min, max, fallback) {
+        const number = Number(value)
+        return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback
+      }
+
+      function resize() {
+        const ratio = window.devicePixelRatio || 1
+        canvas.width = Math.max(1, Math.round(window.innerWidth * ratio))
+        canvas.height = Math.max(1, Math.round(window.innerHeight * ratio))
+        canvas.style.width = `${window.innerWidth}px`
+        canvas.style.height = `${window.innerHeight}px`
+        context.setTransform(ratio, 0, 0, ratio, 0, 0)
+        render()
+      }
+
+      function isHexColor(value) {
+        return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+      }
+
+      function wrapCaption(text, maxWidth) {
+        const lines = []
+        String(text || '').split(/\r?\n/).forEach((paragraph) => {
+          let line = ''
+          for (const character of Array.from(paragraph)) {
+            const next = line + character
+            if (line && context.measureText(next).width > maxWidth) {
+              lines.push(line)
+              line = character
+            } else {
+              line = next
+            }
+          }
+          lines.push(line || ' ')
+        })
+        return lines
+      }
+
+      function fillRoundedRect(x, y, width, height, radius) {
+        const safeRadius = Math.min(radius, width / 2, height / 2)
+        context.beginPath()
+        if (typeof context.roundRect === 'function') {
+          context.roundRect(x, y, width, height, safeRadius)
+        } else {
+          context.moveTo(x + safeRadius, y)
+          context.lineTo(x + width - safeRadius, y)
+          context.quadraticCurveTo(x + width, y, x + width, y + safeRadius)
+          context.lineTo(x + width, y + height - safeRadius)
+          context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height)
+          context.lineTo(x + safeRadius, y + height)
+          context.quadraticCurveTo(x, y + height, x, y + height - safeRadius)
+          context.lineTo(x, y + safeRadius)
+          context.quadraticCurveTo(x, y, x + safeRadius, y)
+        }
+        context.fill()
+      }
+
+      function renderCaption(caption) {
+        if (!caption?.text) return
+        const fontSize = clamp(caption.fontSize, 16, 96, 36)
+        const maxWidth = Math.max(180, Math.min(window.innerWidth * 0.9, clamp(caption.maxWidth, 0.2, 0.95, 0.82) * window.innerWidth))
+        context.font = `600 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`
+        const lines = wrapCaption(caption.text, maxWidth)
+        const lineHeight = fontSize * 1.35
+        const paddingX = fontSize * 0.55
+        const paddingY = fontSize * 0.35
+        const textWidth = Math.min(maxWidth, Math.max(...lines.map((line) => context.measureText(line).width)))
+        const boxWidth = Math.min(window.innerWidth - 24, textWidth + paddingX * 2)
+        const boxHeight = lines.length * lineHeight + paddingY * 2
+        const centerX = clamp(caption.x, 0, 1, 0.5) * window.innerWidth
+        const centerY = clamp(caption.y, 0, 1, 0.88) * window.innerHeight
+        const boxX = Math.max(12, Math.min(window.innerWidth - boxWidth - 12, centerX - boxWidth / 2))
+        const boxY = Math.max(12, Math.min(window.innerHeight - boxHeight - 12, centerY - boxHeight / 2))
+
+        context.fillStyle = isHexColor(caption.backgroundColor) ? caption.backgroundColor : '#111827'
+        context.globalAlpha = clamp(caption.backgroundOpacity, 0, 1, 0.82)
+        fillRoundedRect(boxX, boxY, boxWidth, boxHeight, Math.max(6, fontSize * 0.25))
+        context.fillStyle = isHexColor(caption.color) ? caption.color : '#ffffff'
+        context.globalAlpha = 1
+        context.textAlign = 'center'
+        context.textBaseline = 'middle'
+        lines.forEach((line, index) => {
+          context.fillText(line, boxX + boxWidth / 2, boxY + paddingY + lineHeight * (index + 0.5), maxWidth)
+        })
+      }
+
+      function render() {
+        context.clearRect(0, 0, window.innerWidth, window.innerHeight)
+        strokes.forEach((stroke) => {
+          const points = Array.isArray(stroke?.points) ? stroke.points : []
+          if (points.length < 2) return
+          context.beginPath()
+          points.forEach((point, index) => {
+            const x = clamp(point?.x, 0, 1, 0.5) * window.innerWidth
+            const y = clamp(point?.y, 0, 1, 0.5) * window.innerHeight
+            if (index === 0) context.moveTo(x, y)
+            else context.lineTo(x, y)
+          })
+          context.strokeStyle = /^#[0-9a-f]{6}$/i.test(stroke?.color || '') ? stroke.color : '#ff4d6d'
+          context.lineWidth = clamp(stroke?.width, 1, 24, 4)
+          context.globalAlpha = clamp(stroke?.opacity, 0.1, 1, 0.95)
+          context.lineCap = 'round'
+          context.lineJoin = 'round'
+          context.stroke()
+        })
+        renderCaption(captions.core)
+        renderCaption(captions.writing)
+        context.globalAlpha = 1
+      }
+
+      window.addEventListener('resize', resize)
+      window.cosightOverlay?.onClear(() => {
+        strokes = []
+        captions.core = null
+        captions.writing = null
+        Object.keys(captionTimers).forEach((layer) => {
+          if (captionTimers[layer]) window.clearTimeout(captionTimers[layer])
+          captionTimers[layer] = null
+        })
+        render()
+      })
+      window.cosightOverlay?.onDraw((payload) => {
+        if (payload?.clear) strokes = []
+        const nextStrokes = Array.isArray(payload?.strokes) ? payload.strokes : []
+        strokes.push(...nextStrokes.filter((stroke) => Array.isArray(stroke?.points) && stroke.points.length >= 2))
+        render()
+      })
+      window.cosightOverlay?.onCaption((payload) => {
+        const layer = payload?.layer === 'core' ? 'core' : 'writing'
+        if (captionTimers[layer]) window.clearTimeout(captionTimers[layer])
+        captionTimers[layer] = null
+        if (payload?.clear) captions[layer] = null
+        const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+        if (text) {
+          captions[layer] = {
+            text,
+            x: clamp(payload.x, 0, 1, 0.5),
+            y: clamp(payload.y, 0, 1, 0.88),
+            fontSize: clamp(payload.fontSize, 16, 96, 36),
+            color: isHexColor(payload.color) ? payload.color : '#ffffff',
+            backgroundColor: isHexColor(payload.backgroundColor) ? payload.backgroundColor : '#111827',
+            backgroundOpacity: clamp(payload.backgroundOpacity, 0, 1, 0.82),
+            maxWidth: clamp(payload.maxWidth, 0.2, 0.95, 0.82),
+          }
+          const durationMs = clamp(payload.durationMs, 0, 60000, 5000)
+          if (durationMs > 0) {
+            captionTimers[layer] = window.setTimeout(() => {
+              captions[layer] = null
+              captionTimers[layer] = null
+              render()
+            }, durationMs)
+          }
+        }
+        render()
+      })
+      resize()
+    </script>
+  </body>
+</html>

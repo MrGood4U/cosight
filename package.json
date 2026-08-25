@@ -1,0 +1,24 @@
+{
+  "name": "cosight",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cosight — AI that sees what you see.",
+  "main": "electron/main.mjs",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "vite build",
+    "sync:sample-roles": "node scripts/sync-sample-roles.mjs",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "electron": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest",
+    "wait-on": "latest"
+  }
+}

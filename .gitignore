@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+
+# Frontend and Electron build output
+dist/
+out/
+release/
+.electron-cache/
+
+# Runtime logs and generated diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python caches and local tooling output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+cosight-config.json
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Local QA screenshots and temporary files
+qa-*.png
+screenshots/
+*.tmp
+*.temp
+
+# Keep bundled official role examples tracked.
+!data/
+!data/sample-roles.json
