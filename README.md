@@ -34,22 +34,55 @@ the next.
   or import a previous transcript as conversation context. Media files are not
   embedded in these exports.
 
-## Try the packaged application
+## How to use
 
-The Windows installer is generated under `release/` after packaging. Install
-Cosight and then:
+The Windows installer is generated under `release/` after packaging. After
+installing Cosight, follow this flow to configure a model and start a chat.
 
-1. Open **Models** and add a compatible realtime model configuration. Provide
-   an alias, realtime URL, model name, and API Key, then select that model.
-2. Open **Roles** and choose `Default` or one of the official example Roles.
-   You can create a custom Role when you need different behavior or abilities.
-3. Open **Settings** and select the microphone, audio output device, and UI
-   language. Confirm that the microphone level bar responds to your voice.
-4. Return to **Chat Session**, choose a Role, and click **Share screen**.
-5. Select the display or window to share and wait until the screen status shows
-   that loading has completed.
-6. Click **Start chat** and speak normally. Stop the chat when you want to end
-   the realtime model session; screen sharing is managed independently.
+### 1. Open the Chat Session page
+
+The Chat Session page is the starting point. From here you can select a Role,
+share a display or window, and start a realtime chat.
+
+![Cosight Chat Session page](docs/images/01-home.png)
+
+### 2. Add a realtime model
+
+Open **Models**, click **Add model**, and enter a user-defined alias, model
+name, realtime URL, and API Key. The alias helps distinguish multiple entries
+that use the same model. Select the saved model after adding it.
+
+![Cosight model configuration page](docs/images/02-model-configuration.png)
+
+The API Key is intentionally empty in this documentation screenshot. Use your
+own compatible realtime endpoint and API Key; never commit real credentials to
+the repository.
+
+### 3. Choose or configure a Role
+
+Open **Roles** and choose `Default` or an official example Role. You can also
+create a custom Role with its own identity, behavior, language, voice,
+knowledge, and abilities.
+
+![Cosight role configuration page](docs/images/03-role-configuration.png)
+
+### 4. Return to Chat Session and start
+
+Return to **Chat Session**, select the Role from the selector, and click
+**Share screen**. Select the display or window to share and wait until screen
+loading finishes. Then click **Start chat** and speak normally.
+
+![Cosight Chat Session Role selector](docs/images/04-home-role-selection.png)
+
+You can select the microphone, audio output device, and UI language in
+**Settings**. The Settings page groups device selection, connection and UI
+language, and behavior controls into separate sections. Confirm that the
+microphone level bar responds to your voice.
+
+![Cosight Settings page](docs/images/05-settings.png)
+
+Stopping the chat ends the realtime model session; screen sharing is managed
+independently.
 
 Drawing, Writing, and Core Subtitles require an entire display capture because
 their transparent overlay is positioned over the real desktop. Window capture
