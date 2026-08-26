@@ -1105,7 +1105,12 @@ function App() {
     const context = new AudioContext()
     audioContextRef.current = context
     await context.resume()
-    await context.audioWorklet.addModule('/pcm-processor.js')
+    // The renderer is served from Vite during development but from a
+    // file:// URL inside the packaged Electron app. Resolve the public
+    // worklet relative to the current document so both environments use the
+    // same dist/pcm-processor.js file.
+    const workletUrl = new URL('./pcm-processor.js', window.location.href).toString()
+    await context.audioWorklet.addModule(workletUrl)
     const source = context.createMediaStreamSource(stream)
     const analyser = context.createAnalyser()
     analyser.fftSize = 256

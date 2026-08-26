@@ -119,9 +119,10 @@ npm run package:win
 ```
 
 The installer is written to `release/Cosight-Setup-<version>-x64.exe`. The
-resulting application bundles the Python runtime and bridge dependencies, so
-end users do not need to install Python, Node.js, npm, pip, or the project
-dependencies separately.
+installer uses a per-machine installation and requests administrator approval
+so it can install under `Program Files`; the resulting application bundles the
+Python runtime and bridge dependencies, so end users do not need to install
+Python, Node.js, npm, pip, or the project dependencies separately.
 
 For a public release, add a real application icon and configure a Windows code
 signing certificate in the Electron Builder configuration. The current

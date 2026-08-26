@@ -47,6 +47,14 @@ let bundledSampleRolesCache
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
+// Some Windows machines cannot start Electron's GPU process after the app is
+// installed (the renderer then opens as a blank window). The packaged client
+// does not depend on GPU acceleration for its UI or desktop capture, so use
+// Chromium's software renderer there for a reliable first launch.
+if (process.platform === 'win32' && app.isPackaged) {
+  app.disableHardwareAcceleration()
+}
+
 function serializeError(error) {
   if (!error) return { message: 'Unknown error' }
   return {
@@ -758,6 +766,28 @@ async function createWindow() {
     },
   })
 
+  // Register diagnostics before loading the renderer. A load failure can
+  // happen before loadFile/loadURL resolves, so registering these afterwards
+  // loses the only useful error details for packaged builds.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    debugLog('renderer.process_gone', details)
+  })
+  mainWindow.webContents.on('unresponsive', () => {
+    debugLog('renderer.unresponsive')
+  })
+  mainWindow.webContents.on('responsive', () => {
+    debugLog('renderer.responsive')
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    debugLog('renderer.load_failed', { errorCode, errorDescription, validatedURL, isMainFrame })
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    debugLog('renderer.load_finished', { url: mainWindow.webContents.getURL() })
+  })
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    debugLog('renderer.console', { level, message, line, sourceId })
+  })
+
   if (isDev) {
     await mainWindow.loadURL('http://127.0.0.1:5173')
     mainWindow.webContents.openDevTools({ mode: 'detach' })
@@ -1149,18 +1179,6 @@ app.whenReady().then(async () => {
   screen.on('display-removed', refreshOverlayBounds)
 
   await createWindow()
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    debugLog('renderer.process_gone', details)
-  })
-  mainWindow.webContents.on('unresponsive', () => {
-    debugLog('renderer.unresponsive')
-  })
-  mainWindow.webContents.on('responsive', () => {
-    debugLog('renderer.responsive')
-  })
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    debugLog('renderer.load_failed', { errorCode, errorDescription, validatedURL, isMainFrame })
-  })
   mainWindow.on('closed', () => {
     debugLog('electron.window.closed')
     stopBridge()

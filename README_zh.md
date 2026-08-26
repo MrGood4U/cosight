@@ -118,7 +118,7 @@ npm run package:win
 release/Cosight-Setup-<version>-x64.exe
 ```
 
-最终用户安装后不需要另外安装 Python、Node.js、npm、pip 或项目依赖。打包机器本身仍然需要 Node.js、npm 和 Python。
+安装程序采用所有用户安装模式，会请求管理员权限，以便安装到 `Program Files`。最终用户安装后不需要另外安装 Python、Node.js、npm、pip 或项目依赖。打包机器本身仍然需要 Node.js、npm 和 Python。
 
 面向公开发布时，还应补充正式的应用图标和 Windows 代码签名证书。当前打包流程适合开发测试和内部分发。
 

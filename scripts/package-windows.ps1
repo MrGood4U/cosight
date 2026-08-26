@@ -16,7 +16,7 @@ function Invoke-Checked {
 
   & $FilePath @Arguments
   if ($LASTEXITCODE -ne 0) {
-    throw "命令失败（$LASTEXITCODE）：$FilePath $($Arguments -join ' ')"
+    throw "Command failed ($LASTEXITCODE): $FilePath $($Arguments -join ' ')"
   }
 }
 
@@ -24,7 +24,7 @@ function Find-CommandPath {
   param([Parameter(Mandatory = $true)][string]$Name)
   $command = Get-Command $Name -ErrorAction SilentlyContinue
   if (-not $command) {
-    throw "找不到 $Name。请先安装 Node.js 和 Python 3.12+，再运行打包脚本。"
+    throw "Command not found: $Name. Install Node.js and Python 3.12+ before packaging."
   }
   return $command.Source
 }
@@ -36,13 +36,13 @@ $pyLauncher = Get-Command 'py' -ErrorAction SilentlyContinue
 $python = Get-Command 'python' -ErrorAction SilentlyContinue
 if ($configuredPython) {
   if (-not (Test-Path -LiteralPath $configuredPython)) {
-    throw "COSIGHT_BUILD_PYTHON 指向的文件不存在：$configuredPython"
+    throw "COSIGHT_BUILD_PYTHON does not point to an existing file: $configuredPython"
   }
   $pyLauncher = $null
   $python = [pscustomobject]@{ Source = (Resolve-Path -LiteralPath $configuredPython).Path }
 }
 if (-not $pyLauncher -and -not $python) {
-  throw '找不到 Python。打包机需要 Python 3.12+，最终用户不需要安装 Python。'
+  throw 'Python was not found. The build machine needs Python 3.12+; end users do not need Python.'
 }
 
 $buildVenv = Join-Path $projectRoot '.venv-packaging'
@@ -73,7 +73,7 @@ if (-not (Test-Path -LiteralPath $buildPython)) {
 }
 
 if (-not (Test-Path -LiteralPath $buildPython)) {
-  throw "Python 虚拟环境创建失败：$buildPython"
+  throw "Failed to create the Python packaging environment: $buildPython"
 }
 
 Write-Host '[1/6] Installing build dependencies...' -ForegroundColor Cyan
@@ -114,12 +114,12 @@ Invoke-Checked $buildPython @(
 
 $bridgeExe = Join-Path $pythonDist 'cosight-bridge\cosight-bridge.exe'
 $previewExe = Join-Path $pythonDist 'cosight-prompt-preview\cosight-prompt-preview.exe'
-if (-not (Test-Path -LiteralPath $bridgeExe)) { throw "Python bridge 未生成：$bridgeExe" }
-if (-not (Test-Path -LiteralPath $previewExe)) { throw "Prompt preview 未生成：$previewExe" }
-if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'data\sample-roles.json'))) { throw '缺少 data/sample-roles.json。' }
+if (-not (Test-Path -LiteralPath $bridgeExe)) { throw "Python bridge was not generated: $bridgeExe" }
+if (-not (Test-Path -LiteralPath $previewExe)) { throw "Prompt preview was not generated: $previewExe" }
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'data\sample-roles.json'))) { throw 'Missing data/sample-roles.json.' }
 
 if (-not (Test-Path -LiteralPath $electronBuilder)) {
-  throw '找不到 electron-builder。请先运行 npm ci。'
+  throw 'electron-builder was not found. Run npm ci first.'
 }
 
 Write-Host '[5/6] Building the Windows installer...' -ForegroundColor Cyan

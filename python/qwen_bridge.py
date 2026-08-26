@@ -223,7 +223,7 @@ def build_role_instructions(
         lines.append(
             "Initiative: The client measures cumulative silence from both sides and may explicitly request a proactive turn after "
             f"{timeout_seconds} seconds. "
-            "When a client-triggered turn occurs, do not claim that the user said something they did not say; use the current context and keep the proactive turn concise."
+            "When a client-triggered turn occurs, treat the session as already in progress and ground the proactive response in the latest available screen, audio, and conversation context. Do not claim that the user said something they did not say, restart the conversation, or invent a new session state; keep the proactive turn concise."
         )
         lines.append(
             "Initiative trigger rule:\n"

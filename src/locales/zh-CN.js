@@ -222,7 +222,7 @@ export default {
     name: '模型名称',
     namePlaceholder: 'qwen3.5-omni-flash-realtime',
     realtimeUrl: '实时 URL',
-    urlPlaceholder: 'wss://.../api-ws/v1/realtime',
+    urlPlaceholder: 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
     apiKey: 'API Key',
     keepKeyPlaceholder: '留空以保留已保存的 Key',
     keyPlaceholder: '粘贴 API Key',
