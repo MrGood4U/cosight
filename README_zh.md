@@ -54,6 +54,11 @@ URL 和 API Key。模型别名用于区分多个使用相同模型的配置。�
 截图中的 API Key 有意留空。实际使用时请填写你自己的兼容实时模型服务地址和 API Key，
 不要把真实凭据提交到仓库。
 
+> **阿里云百炼端点说明：** 如果使用 `qwen3.5-omni-flash-realtime`，国内站 API Key
+> 请填写 `wss://dashscope.aliyuncs.com/api-ws/v1/realtime`。如果 API Key 来自新加坡站或
+> 国际站，请改用 `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime`。API Key 和
+> WebSocket 地址必须属于同一个站点或区域，不能混用。
+
 ### 3. 选择或配置角色
 
 打开 **角色** 页面，选择 `Default` 或官方示例角色。你也可以创建自定义角色，

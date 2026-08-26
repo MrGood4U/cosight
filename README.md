@@ -58,6 +58,12 @@ The API Key is intentionally empty in this documentation screenshot. Use your
 own compatible realtime endpoint and API Key; never commit real credentials to
 the repository.
 
+> **Alibaba Cloud Bailian endpoint:** For `qwen3.5-omni-flash-realtime`, use
+> `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` with a Mainland China
+> API Key. If your API Key belongs to the Singapore or International site, use
+> `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime` instead. The API Key
+> and WebSocket endpoint must belong to the same site or region.
+
 ### 3. Choose or configure a Role
 
 Open **Roles** and choose `Default` or an official example Role. You can also
