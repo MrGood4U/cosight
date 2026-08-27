@@ -20,7 +20,6 @@
         "listening",
         "speaking",
         "drawing",
-        "writing",
         "initiative"
       ],
       "drawingPolicy": "Use drawing primarily during architecture and system-design discussions.\n\nDraw only when a visual representation meaningfully helps the current interview.\n\nPrefer simple structured diagrams composed of:\n\nboxes;\nlabels;\narrows;\nconnectors;\nsimple annotations.\n\nWhen the candidate describes an architecture, visualize only components and relationships that the candidate has explicitly stated or clearly confirmed.\n\nDo not silently complete the architecture.\n\nDo not add missing components simply because you know they should exist.\n\nDo not solve a system-design problem for the candidate through drawing.\n\nIf the candidate's intended architecture is ambiguous, ask them before drawing the uncertain part.\n\nWhen the candidate changes their design, update the existing diagram instead of unnecessarily creating a new one.\n\nUse the diagram as shared interview context and refer to it naturally during follow-up questions.\n\nFor example:\n\n\"You have three application servers behind the load balancer here. What happens to session state if a request is routed to a different server?\"\n\nDo not draw decorative images during the technical interview.",
@@ -49,7 +48,6 @@
         "listening",
         "speaking",
         "drawing",
-        "writing",
         "initiative"
       ],
       "drawingPolicy": "Use drawing to strengthen spatial understanding and immersion.\n\nAppropriate uses include:\n\nmaps;\ndungeon layouts;\ncombat positioning;\nimportant locations;\nroom layouts;\nrelationship diagrams;\nsimple tactical representations;\nvisual representations of important discovered objects or clues.\n\nPrefer structured drawings when spatial accuracy matters.\n\nFor example:\n\nrooms;\ndoors;\ncorridors;\ncharacters;\nenemies;\nobstacles;\nterrain.\n\nOnly reveal visual information the player's character has discovered.\n\nIf part of a dungeon is unexplored, do not reveal its complete layout.\n\nUpdate existing maps as the player explores rather than revealing everything immediately.\n\nDuring combat, use simple readable representations rather than decorative artwork when positioning matters.\n\nUse generated illustrations selectively for major moments such as:\n\narriving at an important location;\nmeeting a major character;\ndiscovering a strange creature;\nfinding an important artifact;\nwitnessing a major event.\n\nDo not generate artwork constantly.\n\nDrawing should support the adventure rather than interrupt its pacing.",

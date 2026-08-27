@@ -22,14 +22,18 @@ the next.
   arrows, circles, rectangles, and other annotations on a transparent desktop
   overlay. The model receives the composed result so it can review its own
   drawing.
-- **Writing and subtitles** — Writing is a Role-controlled ability for agent
-  annotations; Subtitles is a Core setting that displays the model's spoken
-  response as subtitles.
+- **Drawing and writing** — Drawing is the unified Role-controlled visual
+  ability for arrows, circles, rectangles, annotations, and short on-screen
+  labels. Subtitles remains a separate Core setting that displays the model's
+  spoken response as subtitles.
+- **Text input** — typed messages use the same Listen input path as completed
+  speech turns, so the rest of the conversation flow remains shared.
 - **Roles** — create reusable prompt profiles with identity, goals, behavior,
   workflow, constraints, language, voice, knowledge, abilities, and optional
   initiative rules.
-- **Multiple models** — store multiple realtime model configurations with a
-  user-defined alias, URL, model name, and API Key, then choose the active one.
+- **Multiple models** — keep the original single-model realtime path, or turn
+  on Harness mode from Models and configure independent Brain, Listen, Speak,
+  and See models. Draw remains a local transparent-canvas executor.
 - **Context transfer** — export transcript text and capability-call records,
   or import a previous transcript as conversation context. Media files are not
   embedded in these exports.
@@ -101,7 +105,9 @@ full-screen overlay coordinate system.
 
 - Windows 10 or later
 - Node.js and npm
-- Python 3.12 or later
+- Python 3.12 or later (needed for the legacy single-model path and Windows
+  packaging)
+- Go 1.27 or later (needed for Harness mode and Windows packaging)
 - A compatible realtime model endpoint and API Key
 
 Install the JavaScript and Python dependencies:
@@ -109,6 +115,9 @@ Install the JavaScript and Python dependencies:
 ```powershell
 npm ci
 python -m pip install -r requirements.txt
+
+# Optional for development when Harness is enabled:
+npm run build:harness
 ```
 
 Start the development client:
@@ -134,9 +143,10 @@ npm run build
 ## Build a Windows installer
 
 The repository includes a one-command Windows packaging workflow. It creates a
-local packaging virtual environment, installs the bridge dependencies, builds
-the two Python entry points with PyInstaller, builds the Vite renderer, and
-creates an x64 NSIS installer with Electron Builder.
+local packaging virtual environment, builds the standalone Go Harness, installs
+the bridge dependencies, builds the two Python entry points with PyInstaller,
+builds the Vite renderer, and creates an x64 NSIS installer with Electron
+Builder.
 
 Run the normal build:
 
@@ -173,9 +183,10 @@ workflow is intended for development and internal distribution.
 electron/                 Electron main process, preload, and desktop overlay
 src/                      React renderer and localized UI
 python/                   Qwen Omni realtime bridge and prompt preview
+harness/                  Go multi-model Harness and fixed JSON signal protocol
 abilities/                Extensible abilities and their prompts/runtime code
-  drawing/                Drawing prompt and drawing runtime contract
-  writing/                Writing prompt and writing runtime contract
+  drawing/                Unified drawing and on-screen writing contract
+  writing/                Backwards-compatible internal writing tool contract
   initiative/             Client-side initiative runtime
 data/sample-roles.json    Official example Roles shipped with the application
 packaging/                PyInstaller specifications
@@ -206,6 +217,20 @@ Bridge and Electron diagnostics are written under:
 
 Diagnostics record protocol events, tool results, errors, and payload lengths;
 raw audio and video frames are not recorded.
+
+When multi-model Harness mode is enabled, the application also writes
+`cosight-harness.log`. It contains request IDs and stage timings for Listen,
+See, Brain, Speak, and Draw, including See cache hits, frame-capture state,
+timeouts, model response sizes, and action failures. Use `listenEventId` or
+`requestId` to trace one turn across:
+
+```text
+%APPDATA%\cosight\logs\electron.log
+%APPDATA%\cosight\logs\cosight-harness.log
+```
+
+Logs do not store API Keys, full prompts, screenshots, raw audio, or raw video
+frames.
 
 ## Sample Roles
 

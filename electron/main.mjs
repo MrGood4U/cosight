@@ -5,39 +5,49 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSy
 import { basename, dirname, join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
+import {
+  HARNESS_MODULES,
+  buildInitiativeCommand,
+  configuredHarnessModels,
+  configuredHarnessSettings,
+  normalizeInitiativeInstructions,
+  normalizeInitiativeTimeout,
+  normalizeRoleAbilities,
+  normalizeRoleText,
+  normalizeScreenVisionChangeThreshold,
+  normalizeScreenVisionInterval,
+  normalizeUsageRecord,
+  publicHarnessModel,
+} from './runtime-utils.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
+const appIconFileName = process.platform === 'win32' ? 'cosight-icon.ico' : 'cosight-icon.png'
+const appIconPath = isDev
+  ? join(__dirname, '..', 'public', appIconFileName)
+  : join(__dirname, '..', 'dist', appIconFileName)
 const configPath = join(app.getPath('userData'), 'cosight-config.json')
+let usageLogPath
 const sampleRolesPath = isDev
   ? join(__dirname, '..', 'data', 'sample-roles.json')
   : join(process.resourcesPath, 'data', 'sample-roles.json')
-const ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing', 'writing', 'initiative']
-const ROLE_ABILITY_ALIASES = { subtitles: 'writing' }
-// Voices currently documented for the Qwen3.5-Omni and Qwen3.5-Omni-Realtime
-// series. Older configurations may contain Cherry/Chelsie; those values are
-// deliberately normalized to the model default before they reach the UI.
-const QWEN35_VOICE_VALUES = new Set([
-  'Tina', 'Cindy', 'Liora Mira', 'Sunnybobi', 'Raymond', 'Ethan', 'Theo Calm',
-  'Serena', 'Harvey', 'Maia', 'Evan', 'Qiao', 'Momo', 'Wil', 'Angel', 'Li Cassian',
-  'Mia', 'Joyner', 'Gold', 'Katerina', 'Ryan', 'Jennifer', 'Aiden', 'Mione', 'Sunny',
-  'Dylan', 'Eric', 'Peter', 'Joseph Chen', 'Marcus', 'Li', 'Kiki', 'Rocky', 'Sohee',
-  'Lenn', 'Ono Anna', 'Sonrisa', 'Bodega', 'Emilien', 'Andre', 'Radio Gol', 'Alek',
-  'Rizky', 'Roya', 'Arda', 'Hana', 'Dolce', 'Jakub', 'Griet', 'Eliška', 'Marina',
-  'Siiri', 'Ingrid', 'Sigga', 'Bea', 'Chloe',
-])
-const DEFAULT_INITIATIVE_TIMEOUT_SECONDS = 10
 const DEFAULT_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
 const SESSION_ARTIFACT_FORMAT = 'cosight-session'
 const SESSION_ARTIFACT_VERSION = 1
 const MAX_SESSION_ARTIFACT_BYTES = 10 * 1024 * 1024
 const MAX_SESSION_MESSAGES = 5000
 const MAX_SESSION_EVENTS = 5000
+const MAX_USAGE_LOG_LINES = 50000
 let mainWindow
 let bridgeProcess
 let bridgeBuffer = ''
 let bridgeStdoutDecoder
 let bridgeStderrDecoder
+let harnessProcess
+let harnessBuffer = ''
+let harnessStdoutDecoder
+let harnessStderrDecoder
+let activeRuntime = ''
 let selectedDisplaySourceId = ''
 let electronLogPath
 let overlayWindow
@@ -46,6 +56,10 @@ let overlaySource
 let bundledSampleRolesCache
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.mrgood4u.cosight')
+}
 
 // Some Windows machines cannot start Electron's GPU process after the app is
 // installed (the renderer then opens as a blank window). The packaged client
@@ -72,6 +86,53 @@ function getElectronLogPath() {
     electronLogPath = join(__dirname, '..', 'logs', 'electron.log')
   }
   return electronLogPath
+}
+
+function getUsageLogPath() {
+  if (usageLogPath) return usageLogPath
+  try {
+    usageLogPath = join(app.getPath('userData'), 'logs', 'model-usage.jsonl')
+  } catch {
+    usageLogPath = join(__dirname, '..', 'logs', 'model-usage.jsonl')
+  }
+  return usageLogPath
+}
+
+function appendUsageRecord(value) {
+  const record = normalizeUsageRecord(value)
+  if (!record) return false
+  try {
+    const path = getUsageLogPath()
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, `${JSON.stringify(record)}\n`, 'utf8')
+    return true
+  } catch (error) {
+    debugLog('usage.record.write_error', { error: serializeError(error) })
+    return false
+  }
+}
+
+function readUsageRecords(filters = {}) {
+  const path = getUsageLogPath()
+  if (!existsSync(path)) return []
+  let lines
+  try {
+    lines = readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean).slice(-MAX_USAGE_LOG_LINES)
+  } catch (error) {
+    debugLog('usage.record.read_error', { error: serializeError(error) })
+    return []
+  }
+  const from = Date.parse(String(filters.from || ''))
+  const to = Date.parse(String(filters.to || ''))
+  return lines.map((line) => {
+    try { return normalizeUsageRecord(JSON.parse(line)) } catch { return null }
+  }).filter((record) => {
+    if (!record) return false
+    const timestamp = Date.parse(record.timestamp)
+    if (Number.isFinite(from) && (!Number.isFinite(timestamp) || timestamp < from)) return false
+    if (Number.isFinite(to) && (!Number.isFinite(timestamp) || timestamp > to)) return false
+    return true
+  })
 }
 
 function debugLog(kind, payload = {}) {
@@ -197,9 +258,12 @@ function normalizeSessionArtifact(value) {
         constraints: typeof value.role.constraints === 'string' ? value.role.constraints.slice(0, 20000) : '',
         language: typeof value.role.language === 'string' ? value.role.language.slice(0, 32) : 'auto',
         voice: typeof value.role.voice === 'string' ? value.role.voice.slice(0, 80) : '',
+        speechStyle: typeof value.role.speechStyle === 'string' ? value.role.speechStyle.slice(0, 4000) : '',
         abilities: Array.isArray(value.role.abilities) ? value.role.abilities.filter((item) => typeof item === 'string').slice(0, 32) : [],
         drawingPolicy: typeof value.role.drawingPolicy === 'string' ? value.role.drawingPolicy.slice(0, 20000) : '',
         writingPolicy: typeof value.role.writingPolicy === 'string' ? value.role.writingPolicy.slice(0, 20000) : '',
+        screenVisionIntervalSec: value.role.screenVisionIntervalSec ?? '',
+        screenVisionChangeThreshold: value.role.screenVisionChangeThreshold ?? '',
         initiativeTimeoutSec: value.role.initiativeTimeoutSec ?? '',
         initiativePrompt: typeof value.role.initiativePrompt === 'string' ? value.role.initiativePrompt.slice(0, 20000) : '',
         knowledgeText: typeof value.role.knowledgeText === 'string' ? value.role.knowledgeText.slice(0, 50000) : '',
@@ -266,17 +330,9 @@ function allRoles(config) {
   ]
 }
 
-function normalizeRoleAbilities(value) {
-  const result = []
-  for (const ability of Array.isArray(value) ? value : []) {
-    const normalized = ROLE_ABILITY_ALIASES[ability] || ability
-    if (ROLE_ABILITY_IDS.includes(normalized) && !result.includes(normalized)) result.push(normalized)
-  }
-  return result
-}
-
 function publicRole(role) {
   const abilities = normalizeRoleAbilities(role.abilities)
+  const screenVisionEnabled = abilities.includes('screenVision')
   const initiativeEnabled = abilities.includes('initiative')
   return {
     id: role.id,
@@ -290,11 +346,14 @@ function publicRole(role) {
     constraints: role.constraints || '',
     language: role.language || 'auto',
     voice: normalizeRoleVoice(role.voice),
+    speechStyle: normalizeRoleText(role.speechStyle, 4000),
     avatar: typeof role.avatar === 'string' && role.avatar.startsWith('data:image/') ? role.avatar : '',
     avatarName: role.avatarName || '',
     abilities,
     drawingPolicy: abilities.includes('drawing') ? normalizeRoleText(role.drawingPolicy, 20000) : '',
-    writingPolicy: abilities.includes('writing') ? normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000) : '',
+    writingPolicy: abilities.includes('drawing') ? normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000) : '',
+    screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(role.screenVisionIntervalSec) : '',
+    screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(role.screenVisionChangeThreshold) : '',
     initiativeTimeoutSec: initiativeEnabled ? normalizeInitiativeTimeout(role.initiativeTimeoutSec) : '',
     initiativePrompt: initiativeEnabled ? normalizeRoleText(role.initiativePrompt, 20000) : '',
     knowledgeText: role.knowledgeText || '',
@@ -321,28 +380,21 @@ function avatarMimeType(filePath) {
   }[extension] || ''
 }
 
-function normalizeRoleText(value, maxLength = 20000) {
-  return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
-}
-
 function normalizeRoleVoice(value) {
-  const voice = normalizeRoleText(value, 80)
-  return QWEN35_VOICE_VALUES.has(voice) ? voice : ''
-}
-
-function normalizeInitiativeTimeout(value) {
-  const parsed = Number.parseInt(String(value), 10)
-  if (!Number.isFinite(parsed)) return DEFAULT_INITIATIVE_TIMEOUT_SECONDS
-  return Math.min(300, Math.max(5, parsed))
+  return normalizeRoleText(value, 80)
 }
 
 function normalizeRoleForRuntime(role) {
   if (!role || typeof role !== 'object') return null
   const abilities = normalizeRoleAbilities(role.abilities)
+  const screenVisionEnabled = abilities.includes('screenVision')
   return {
     ...role,
     abilities,
     writingPolicy: normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000),
+    speechStyle: normalizeRoleText(role.speechStyle, 4000),
+    screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(role.screenVisionIntervalSec) : '',
+    screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(role.screenVisionChangeThreshold) : '',
     voice: normalizeRoleVoice(role.voice),
   }
 }
@@ -366,7 +418,7 @@ function runPromptPreview(roleInput) {
   const payload = JSON.stringify({
     role,
     canvasEnabled: abilities.has('drawing'),
-    writingEnabled: abilities.has('writing'),
+    writingEnabled: abilities.has('drawing'),
     screenVisionEnabled: abilities.has('screenVision'),
     listeningEnabled: abilities.has('listening'),
     speakingEnabled: abilities.has('speaking'),
@@ -454,6 +506,14 @@ function persistRoleFiles(roleId, incomingFiles, existingFiles) {
 
 function saveModels(config, models, selectedModelId) {
   const nextConfig = { ...config, models, selectedModelId }
+  delete nextConfig.apiKey
+  delete nextConfig.encrypted
+  writeConfig(nextConfig)
+  return nextConfig
+}
+
+function saveHarnessModels(config, harnessModels) {
+  const nextConfig = { ...config, harnessModels }
   delete nextConfig.apiKey
   delete nextConfig.encrypted
   writeConfig(nextConfig)
@@ -648,8 +708,10 @@ function startBridge(config, modelProfile, apiKey) {
       COSIGHT_DEBUG_LOG: join(app.getPath('userData'), 'logs', 'qwen-bridge.log'),
     },
   })
+  activeRuntime = 'legacy'
+  const processRef = bridgeProcess
   debugLog('bridge.process.spawned', {
-    pid: bridgeProcess.pid,
+    pid: processRef.pid,
     command,
     args: invocationArgs,
     model: modelProfile.name,
@@ -660,48 +722,49 @@ function startBridge(config, modelProfile, apiKey) {
     initiativeEnabled: Boolean(config?.initiativeEnabled),
     roleId: config?.role?.id,
     canvasEnabled: Boolean(config?.canvasEnabled),
-    writingEnabled: Boolean(config?.writingEnabled ?? config?.captionsEnabled),
+    writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
     subtitlesEnabled: Boolean(config?.subtitlesEnabled),
   })
   bridgeBuffer = ''
   bridgeStdoutDecoder = new StringDecoder('utf8')
   bridgeStderrDecoder = new StringDecoder('utf8')
 
-  bridgeProcess.stdout.on('data', (chunk) => {
+  processRef.stdout.on('data', (chunk) => {
     bridgeBuffer += bridgeStdoutDecoder.write(chunk)
     const lines = bridgeBuffer.split(/\r?\n/)
     bridgeBuffer = lines.pop() ?? ''
     for (const line of lines) {
       if (!line.trim()) continue
       try {
-        emit(JSON.parse(line))
+        forwardHarnessPayload(JSON.parse(line))
       } catch {
         debugLog('bridge.stdout.parse_error', { line: line.slice(0, 1000) })
         emit({ type: 'bridge.log', message: line })
       }
     }
   })
-  bridgeProcess.stderr.on('data', (chunk) => {
+  processRef.stderr.on('data', (chunk) => {
     const message = bridgeStderrDecoder.write(chunk).trim()
     if (message) {
       debugLog('bridge.stderr', { message: message.slice(0, 4000) })
       emit({ type: 'bridge.log', message })
     }
   })
-  bridgeProcess.on('error', (error) => {
-    debugLog('bridge.process.error', { pid: bridgeProcess?.pid, error: serializeError(error) })
+  processRef.on('error', (error) => {
+    debugLog('bridge.process.error', { pid: processRef.pid, error: serializeError(error) })
     emit({ type: 'bridge.error', message: `Python bridge 启动失败：${error.message}` })
-    bridgeProcess = undefined
+    if (bridgeProcess === processRef) bridgeProcess = undefined
+    if (activeRuntime === 'legacy') activeRuntime = ''
   })
-  bridgeProcess.on('exit', (code) => {
-    debugLog('bridge.process.exit', { code, pid: bridgeProcess?.pid })
+  processRef.on('exit', (code) => {
+    debugLog('bridge.process.exit', { code, pid: processRef.pid })
     bridgeBuffer += bridgeStdoutDecoder?.end() || ''
     const lines = bridgeBuffer.split(/\r?\n/)
     bridgeBuffer = ''
     for (const line of lines) {
       if (!line.trim()) continue
       try {
-        emit(JSON.parse(line))
+        forwardHarnessPayload(JSON.parse(line))
       } catch {
         debugLog('bridge.stdout.parse_error', { line: line.slice(0, 1000) })
         emit({ type: 'bridge.log', message: line })
@@ -713,21 +776,22 @@ function startBridge(config, modelProfile, apiKey) {
       emit({ type: 'bridge.log', message: stderrMessage })
     }
     emit({ type: 'bridge.closed', code })
-    bridgeProcess = undefined
+    if (bridgeProcess === processRef) bridgeProcess = undefined
+    if (activeRuntime === 'legacy') activeRuntime = ''
   })
 
   sendBridge({
     type: 'start',
     model: modelProfile.name,
     url: modelProfile.url,
-    voice: config?.voice || config?.role?.voice,
+    voice: config?.role?.voice || config?.voice,
     role: config?.role || null,
     screenVisionEnabled: Boolean(config?.screenVisionEnabled),
     listeningEnabled: Boolean(config?.listeningEnabled),
     speakingEnabled: Boolean(config?.speakingEnabled),
     initiativeEnabled: Boolean(config?.initiativeEnabled),
     canvasEnabled: Boolean(config?.canvasEnabled),
-    writingEnabled: Boolean(config?.writingEnabled ?? config?.captionsEnabled),
+    writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
     importedContext: config?.importedContext || null,
   })
   return { ok: true }
@@ -748,6 +812,243 @@ function stopBridge() {
     debugLog('bridge.process.kill_error', { pid, error: serializeError(error) })
   }
   bridgeProcess = undefined
+  if (activeRuntime === 'legacy') activeRuntime = ''
+}
+
+function harnessCommand() {
+  const executable = process.platform === 'win32' ? 'cosight-harness.exe' : 'cosight-harness'
+  if (app.isPackaged) {
+    return {
+      command: join(process.resourcesPath, 'harness', executable),
+      args: [],
+      cwd: join(process.resourcesPath, 'harness'),
+      packaged: true,
+    }
+  }
+  if (process.env.COSIGHT_HARNESS) {
+    return { command: process.env.COSIGHT_HARNESS, args: [], cwd: join(__dirname, '..'), packaged: false }
+  }
+  const built = join(__dirname, '..', 'build', 'harness', executable)
+  if (existsSync(built)) {
+    return { command: built, args: [], cwd: join(__dirname, '..'), packaged: false }
+  }
+  return {
+    command: process.env.COSIGHT_GO || 'go',
+    args: ['run', '.'],
+    cwd: join(__dirname, '..', 'harness'),
+    packaged: false,
+    fallback: true,
+  }
+}
+
+function sendHarness(command) {
+  const type = command?.type || 'unknown'
+  const isSeeFrame = type === 'frame' && (command?.mode === 'see' || command?.requestId)
+  if (!harnessProcess?.stdin?.writable) {
+    if (!['audio', 'video', 'frame'].includes(type) || isSeeFrame) {
+      debugLog('harness.command.not_sent', {
+        type,
+        mode: command?.mode,
+        requestId: command?.requestId,
+        bytes: typeof command?.data === 'string' ? command.data.length : undefined,
+        reason: 'stdin_not_writable',
+      })
+    }
+    return false
+  }
+  try {
+    harnessProcess.stdin.write(`${JSON.stringify(command)}\n`)
+    if (!['audio', 'video', 'frame'].includes(type) || isSeeFrame) {
+      debugLog('harness.command.sent', {
+        type,
+        pid: harnessProcess.pid,
+        actionId: command.actionId,
+        mode: command.mode,
+        requestId: command.requestId,
+        bytes: typeof command.data === 'string' ? command.data.length : undefined,
+      })
+    }
+    return true
+  } catch (error) {
+    debugLog('harness.command.send_error', { type, error: serializeError(error) })
+    return false
+  }
+}
+
+function forwardHarnessPayload(payload) {
+  if (payload?.type === 'model.usage') {
+    appendUsageRecord(payload)
+    debugLog('model.usage', {
+      module: payload.module,
+      model: payload.model,
+      inputTokens: payload.inputTokens,
+      outputTokens: payload.outputTokens,
+      totalTokens: payload.totalTokens,
+    })
+  } else if (payload?.type === 'harness.action.failed') {
+    debugLog('harness.action.failed', payload)
+  } else if (payload?.type === 'harness.log') {
+    const { type, message, ...fields } = payload
+    debugLog(`harness.${message || 'log'}`, fields)
+    if (message === 'model.usage') appendUsageRecord(fields)
+  } else if (payload?.type === 'harness.signal') {
+    const signal = payload.signal || {}
+    const signalPayload = signal.payload || {}
+    debugLog('harness.signal', {
+      type: signal.type,
+      eventId: signal.eventId,
+      sessionId: signal.sessionId,
+      createdAt: signal.createdAt,
+      sourceModule: signal.source?.module,
+      sourceModel: signal.source?.model,
+      payloadSummary: {
+        textBytes: typeof signalPayload.text === 'string' ? signalPayload.text.length : undefined,
+        sceneBytes: typeof signalPayload.scene === 'string' ? signalPayload.scene.length : undefined,
+        summaryBytes: typeof signalPayload.summary === 'string' ? signalPayload.summary.length : undefined,
+        objectCount: Array.isArray(signalPayload.objects) ? signalPayload.objects.length : undefined,
+        textBlockCount: Array.isArray(signalPayload.textBlocks) ? signalPayload.textBlocks.length : undefined,
+      },
+    })
+  } else if (payload?.type === 'brain.action') {
+    const actions = Array.isArray(payload.actions) ? payload.actions : []
+    debugLog('harness.brain.action', {
+      eventId: payload.eventId,
+      sessionId: payload.sessionId,
+      listenEventId: payload.replyTo?.listenEventId,
+      seeEventId: payload.replyTo?.seeEventId,
+      actionCount: actions.length,
+      actionTypes: actions.map((action) => action?.type).filter(Boolean),
+    })
+  } else if (payload?.type === 'assistant.response.done') {
+    debugLog('harness.assistant.response.done', {
+      outputTypes: payload.outputTypes,
+    })
+  }
+  emit(payload)
+}
+
+function sendSessionCommand(command) {
+  return activeRuntime === 'harness' ? sendHarness(command) : sendBridge(command)
+}
+
+function startHarness(config, harnessModels) {
+  if (harnessProcess) {
+    debugLog('harness.start.reused', { pid: harnessProcess.pid })
+    return { ok: true, reused: true }
+  }
+  const { command, args, cwd, packaged, fallback } = harnessCommand()
+  const invocationArgs = args
+  harnessProcess = spawn(command, invocationArgs, {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: {
+      ...process.env,
+      COSIGHT_DEBUG_LOG: join(app.getPath('userData'), 'logs', 'cosight-harness.log'),
+    },
+  })
+  activeRuntime = 'harness'
+  const processRef = harnessProcess
+  debugLog('harness.process.spawned', {
+    pid: processRef.pid,
+    command,
+    args: invocationArgs,
+    packaged,
+    fallback: Boolean(fallback),
+    roleId: config?.role?.id,
+  })
+  harnessBuffer = ''
+  harnessStdoutDecoder = new StringDecoder('utf8')
+  harnessStderrDecoder = new StringDecoder('utf8')
+
+  processRef.stdout.on('data', (chunk) => {
+    harnessBuffer += harnessStdoutDecoder.write(chunk)
+    const lines = harnessBuffer.split(/\r?\n/)
+    harnessBuffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        forwardHarnessPayload(JSON.parse(line))
+      } catch {
+        debugLog('harness.stdout.parse_error', { line: line.slice(0, 1000) })
+        emit({ type: 'bridge.log', message: line })
+      }
+    }
+  })
+  processRef.stderr.on('data', (chunk) => {
+    const message = harnessStderrDecoder.write(chunk).trim()
+    if (message) {
+      debugLog('harness.stderr', { message: message.slice(0, 4000) })
+      emit({ type: 'bridge.log', message })
+    }
+  })
+  processRef.on('error', (error) => {
+    debugLog('harness.process.error', { pid: processRef.pid, error: serializeError(error) })
+    emit({ type: 'bridge.error', message: `Harness 启动失败：${error.message}` })
+    if (harnessProcess === processRef) harnessProcess = undefined
+    if (activeRuntime === 'harness') activeRuntime = ''
+  })
+  processRef.on('exit', (code) => {
+    debugLog('harness.process.exit', { code, pid: processRef.pid })
+    harnessBuffer += harnessStdoutDecoder?.end() || ''
+    const lines = harnessBuffer.split(/\r?\n/)
+    harnessBuffer = ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        forwardHarnessPayload(JSON.parse(line))
+      } catch {
+        debugLog('harness.stdout.parse_error', { line: line.slice(0, 1000) })
+        emit({ type: 'bridge.log', message: line })
+      }
+    }
+    const stderrMessage = harnessStderrDecoder?.end().trim()
+    if (stderrMessage) {
+      debugLog('harness.stderr', { message: stderrMessage.slice(0, 4000) })
+      emit({ type: 'bridge.log', message: stderrMessage })
+    }
+    emit({ type: 'bridge.closed', code, mode: 'harness' })
+    if (harnessProcess === processRef) harnessProcess = undefined
+    if (activeRuntime === 'harness') activeRuntime = ''
+  })
+
+  sendHarness({
+    type: 'start',
+    config: {
+      sessionId: config?.sessionId || randomUUID(),
+      models: harnessModels,
+      role: config?.role || null,
+      seeMinIntervalMs: config?.seeMinIntervalMs,
+      screenVisionEnabled: Boolean(config?.screenVisionEnabled),
+      screenSharing: Boolean(config?.screenSharing),
+      recentConversationCount: config?.recentConversationCount,
+      recentVisionCount: config?.recentVisionCount,
+      initiativeEnabled: Boolean(config?.initiativeEnabled),
+      listeningEnabled: Boolean(config?.listeningEnabled),
+      speakingEnabled: Boolean(config?.speakingEnabled),
+      drawingEnabled: Boolean(config?.canvasEnabled),
+      importedContext: config?.importedContext || null,
+    },
+  })
+  return { ok: true }
+}
+
+function stopHarness() {
+  if (!harnessProcess) {
+    debugLog('harness.stop.ignored', { reason: 'not_running' })
+    return
+  }
+  const processRef = harnessProcess
+  debugLog('harness.stop.requested', { pid: processRef.pid })
+  sendHarness({ type: 'stop' })
+  try {
+    const killed = processRef.kill()
+    debugLog('harness.process.kill', { pid: processRef.pid, killed })
+  } catch (error) {
+    debugLog('harness.process.kill_error', { pid: processRef.pid, error: serializeError(error) })
+  }
+  if (harnessProcess === processRef) harnessProcess = undefined
+  if (activeRuntime === 'harness') activeRuntime = ''
 }
 
 async function createWindow() {
@@ -758,6 +1059,7 @@ async function createWindow() {
     minHeight: 720,
     backgroundColor: '#0d1117',
     title: 'Cosight',
+    icon: appIconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -811,6 +1113,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', () => {
     const config = readConfig()
     const models = configuredModels(config)
+    const harnessModels = configuredHarnessModels(config)
     const roles = allRoles(config)
     const selectedModelId = models.some((model) => model.id === config.selectedModelId)
       ? config.selectedModelId
@@ -818,8 +1121,20 @@ app.whenReady().then(async () => {
     const selectedRoleId = roles.some((role) => role.id === config.selectedRoleId)
       ? config.selectedRoleId
       : ''
-    return { models: models.map(publicModel), selectedModelId, roles: roles.map(publicRole), selectedRoleId }
+    return {
+      models: models.map(publicModel),
+      selectedModelId,
+      roles: roles.map(publicRole),
+      selectedRoleId,
+      modelMode: config.modelMode === 'harness' ? 'harness' : 'legacy',
+      harnessModels: Object.fromEntries(HARNESS_MODULES.map((module) => [module, publicHarnessModel(harnessModels[module])])),
+      harnessSettings: configuredHarnessSettings(config),
+    }
   })
+  ipcMain.handle('usage:get', (_event, filters) => ({
+    ok: true,
+    records: readUsageRecords(filters && typeof filters === 'object' ? filters : {}),
+  }))
   ipcMain.handle('roles:pick-files', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
@@ -868,6 +1183,7 @@ app.whenReady().then(async () => {
     const existing = existingIndex >= 0 ? roles[existingIndex] : undefined
     const id = existing?.id || randomUUID()
     const abilities = normalizeRoleAbilities(roleInput.abilities)
+    const screenVisionEnabled = abilities.includes('screenVision')
     const initiativeEnabled = abilities.includes('initiative')
     const nextRole = {
       id,
@@ -880,11 +1196,18 @@ app.whenReady().then(async () => {
       constraints: normalizeRoleText(roleInput.constraints),
       language: ['auto', 'zh-CN', 'en-US'].includes(roleInput.language) ? roleInput.language : 'auto',
       voice: normalizeRoleVoice(roleInput.voice),
+      speechStyle: normalizeRoleText(roleInput.speechStyle, 4000),
       avatar: roleInput.avatarRemoved ? '' : (normalizeAvatarData(roleInput.avatar) || normalizeAvatarData(existing?.avatar)),
       avatarName: roleInput.avatarRemoved ? '' : (normalizeRoleText(roleInput.avatarName, 160) || existing?.avatarName || ''),
       abilities,
       drawingPolicy: abilities.includes('drawing') ? normalizeRoleText(roleInput.drawingPolicy, 20000) : '',
-      writingPolicy: abilities.includes('writing') ? normalizeRoleText(roleInput.writingPolicy || roleInput.subtitlesPolicy, 20000) : '',
+      // Keep this field internally so legacy writing guidance survives, but
+      // expose and control it through the unified Drawing capability.
+      writingPolicy: abilities.includes('drawing')
+        ? normalizeRoleText(roleInput.writingPolicy || existing?.writingPolicy || roleInput.subtitlesPolicy, 20000)
+        : '',
+      screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(roleInput.screenVisionIntervalSec) : '',
+      screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(roleInput.screenVisionChangeThreshold) : '',
       initiativeTimeoutSec: initiativeEnabled ? normalizeInitiativeTimeout(roleInput.initiativeTimeoutSec) : '',
       initiativePrompt: initiativeEnabled ? normalizeRoleText(roleInput.initiativePrompt, 20000) : '',
       knowledgeText: normalizeRoleText(roleInput.knowledgeText, 50000),
@@ -972,6 +1295,75 @@ app.whenReady().then(async () => {
     stopBridge()
     return { ok: true, selectedModelId }
   })
+  ipcMain.handle('settings:set-model-mode', (_event, mode) => {
+    if (mode !== 'legacy' && mode !== 'harness') return { ok: false, error: '模型模式无效。' }
+    const config = readConfig()
+    writeConfig({ ...config, modelMode: mode })
+    debugLog('settings.model_mode.changed', { mode })
+    return { ok: true, modelMode: mode }
+  })
+  ipcMain.handle('settings:save-harness-model', (_event, modelInput) => {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用。' }
+    if (!modelInput || typeof modelInput !== 'object') return { ok: false, error: 'Harness 模型配置无效。' }
+    const module = typeof modelInput.module === 'string' ? modelInput.module.trim().toLowerCase() : ''
+    if (!HARNESS_MODULES.includes(module)) return { ok: false, error: 'Harness 模块无效。' }
+    const name = typeof modelInput.name === 'string' ? modelInput.name.trim() : ''
+    const alias = typeof modelInput.alias === 'string' ? modelInput.alias.trim().slice(0, 120) : ''
+    const url = typeof modelInput.url === 'string' ? modelInput.url.trim() : ''
+    const voice = typeof modelInput.voice === 'string' ? modelInput.voice.trim().slice(0, 80) : ''
+    const apiKey = typeof modelInput.apiKey === 'string' ? modelInput.apiKey.trim() : ''
+    if (!name) return { ok: false, error: 'Model name 不能为空。' }
+    if (!url) return { ok: false, error: 'URL 不能为空。' }
+    try {
+      new URL(url)
+    } catch {
+      return { ok: false, error: 'URL 格式无效。' }
+    }
+    const config = readConfig()
+    const harnessModels = configuredHarnessModels(config)
+    const existing = harnessModels[module]
+    if (!apiKey && !existing?.apiKey) return { ok: false, error: 'API Key 不能为空。' }
+    const nextModel = {
+      id: existing?.id || randomUUID(),
+      alias,
+      name,
+      url,
+      voice,
+      apiKey: apiKey ? safeStorage.encryptString(apiKey).toString('base64') : existing.apiKey,
+      encrypted: true,
+    }
+    harnessModels[module] = nextModel
+    saveHarnessModels(config, harnessModels)
+    debugLog('settings.harness_model.saved', { module, model: name })
+    return { ok: true, module, model: publicHarnessModel(nextModel) }
+  })
+  ipcMain.handle('settings:delete-harness-model', (_event, moduleInput) => {
+    const module = typeof moduleInput === 'string' ? moduleInput.trim().toLowerCase() : ''
+    if (!HARNESS_MODULES.includes(module)) return { ok: false, error: 'Harness 模块无效。' }
+    const config = readConfig()
+    const harnessModels = configuredHarnessModels(config)
+    if (!harnessModels[module]) return { ok: false, error: '找不到这个 Harness 模型配置。' }
+    harnessModels[module] = null
+    saveHarnessModels(config, harnessModels)
+    if (activeRuntime === 'harness') stopHarness()
+    return { ok: true, module }
+  })
+  ipcMain.handle('settings:save-harness-settings', (_event, settingsInput) => {
+    const intervalValue = Number(settingsInput?.seeMinIntervalMs)
+    const conversationValue = Number(settingsInput?.recentConversationCount)
+    const visionValue = Number(settingsInput?.recentVisionCount)
+    if (!Number.isFinite(intervalValue)) return { ok: false, error: 'See 最小调用间隔必须是数字。' }
+    if (!Number.isFinite(conversationValue)) return { ok: false, error: '最近对话条数必须是数字。' }
+    if (!Number.isFinite(visionValue)) return { ok: false, error: '最近视觉数据条数必须是数字。' }
+    const settings = {
+      seeMinIntervalMs: Math.min(60000, Math.max(1000, Math.round(intervalValue))),
+      recentConversationCount: Math.min(100, Math.max(1, Math.round(conversationValue))),
+      recentVisionCount: Math.min(20, Math.max(1, Math.round(visionValue))),
+    }
+    const config = readConfig()
+    writeConfig({ ...config, harnessSettings: settings })
+    return { ok: true, harnessSettings: settings }
+  })
   ipcMain.handle('desktop:list-sources', async () => {
     const sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
@@ -1044,6 +1436,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('qwen:start', (_event, config) => {
     debugLog('ipc.qwen.start', {
+      mode: config?.mode,
       modelId: config?.modelId,
       screenVisionEnabled: Boolean(config?.screenVisionEnabled),
       listeningEnabled: Boolean(config?.listeningEnabled),
@@ -1051,12 +1444,62 @@ app.whenReady().then(async () => {
       initiativeEnabled: Boolean(config?.initiativeEnabled),
       roleId: config?.roleId,
       canvasEnabled: Boolean(config?.canvasEnabled),
-      writingEnabled: Boolean(config?.writingEnabled ?? config?.captionsEnabled),
+      writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
       subtitlesEnabled: Boolean(config?.subtitlesEnabled),
     })
     const storedConfig = readConfig()
+    const useHarness = config?.mode ? config.mode === 'harness' : storedConfig.modelMode === 'harness'
     const models = configuredModels(storedConfig)
     const roles = allRoles(storedConfig)
+    const storedRole = roles.find((item) => item.id === config?.roleId) || null
+    const role = normalizeRoleForRuntime(storedRole)
+
+    if (useHarness) {
+      if (bridgeProcess) stopBridge()
+      const storedHarnessModels = configuredHarnessModels(storedConfig)
+      const runtimeModels = {}
+      try {
+        for (const module of HARNESS_MODULES) {
+          const model = storedHarnessModels[module]
+          if (!model) return { ok: false, error: `请先配置 Harness 的 ${module} 模型。` }
+          if (!model.apiKey) return { ok: false, error: `Harness 的 ${module} 模型缺少 API Key。` }
+          const apiKey = model.encrypted === false
+            ? model.apiKey
+            : safeStorage.decryptString(Buffer.from(model.apiKey, 'base64'))
+          runtimeModels[module] = { ...model, apiKey }
+        }
+        const roleScreenVisionEnabled = Boolean(role?.abilities?.includes('screenVision'))
+        const harnessSettings = configuredHarnessSettings(storedConfig)
+        const sessionConfig = {
+          ...(config || {}),
+          role,
+          recentConversationCount: harnessSettings.recentConversationCount,
+          recentVisionCount: harnessSettings.recentVisionCount,
+          seeMinIntervalMs: roleScreenVisionEnabled
+            ? role.screenVisionIntervalSec * 1000
+            : harnessSettings.seeMinIntervalMs,
+          seeChangeThreshold: roleScreenVisionEnabled
+            ? role.screenVisionChangeThreshold
+            : DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
+        }
+        debugLog('ipc.qwen.start.harness-vision-settings', {
+          roleId: storedRole?.id || '',
+          screenVisionEnabled: roleScreenVisionEnabled,
+          seeMinIntervalMs: sessionConfig.seeMinIntervalMs,
+          seeChangeThreshold: sessionConfig.seeChangeThreshold,
+          usedRoleInterval: roleScreenVisionEnabled,
+          usedRoleThreshold: roleScreenVisionEnabled,
+        })
+        const result = startHarness(sessionConfig, runtimeModels)
+        debugLog('ipc.qwen.start.result', { mode: 'harness', ok: result.ok, reused: result.reused })
+        return result
+      } catch (error) {
+        debugLog('ipc.qwen.start.error', { mode: 'harness', error: serializeError(error) })
+        return { ok: false, error: `Harness 模型配置读取失败：${error.message}` }
+      }
+    }
+
+    if (harnessProcess) stopHarness()
     const modelId = config?.modelId || storedConfig.selectedModelId || models[0]?.id
     const modelProfile = models.find((model) => model.id === modelId)
     if (!modelProfile) {
@@ -1068,8 +1511,6 @@ app.whenReady().then(async () => {
         const apiKey = modelProfile.encrypted === false
           ? modelProfile.apiKey
           : safeStorage.decryptString(Buffer.from(modelProfile.apiKey, 'base64'))
-        const storedRole = roles.find((item) => item.id === config?.roleId) || null
-        const role = normalizeRoleForRuntime(storedRole)
         const sessionConfig = { ...(config || {}), role }
         const result = startBridge(sessionConfig, modelProfile, apiKey)
         debugLog('ipc.qwen.start.result', { ok: result.ok, reused: result.reused, model: modelProfile.name })
@@ -1085,42 +1526,67 @@ app.whenReady().then(async () => {
   ipcMain.handle('qwen:stop', () => {
     debugLog('ipc.qwen.stop')
     stopBridge()
+    stopHarness()
     return { ok: true }
   })
   ipcMain.on('qwen:capabilities-update', (_event, capabilities) => {
-    const sent = sendBridge({
+    const sent = sendSessionCommand({
       type: 'capabilities.update',
       canvasEnabled: Boolean(capabilities?.canvasEnabled),
-      writingEnabled: Boolean(capabilities?.writingEnabled),
+      writingEnabled: Boolean(capabilities?.canvasEnabled || capabilities?.writingEnabled),
+      screenSharing: Boolean(capabilities?.screenSharing),
     })
     debugLog('ipc.qwen.capabilities_update', {
       sent,
       canvasEnabled: Boolean(capabilities?.canvasEnabled),
-      writingEnabled: Boolean(capabilities?.writingEnabled),
+      writingEnabled: Boolean(capabilities?.canvasEnabled || capabilities?.writingEnabled),
+      screenSharing: Boolean(capabilities?.screenSharing),
     })
   })
   ipcMain.handle('qwen:initiative', (_event, instructions) => {
-    const prompt = typeof instructions === 'string' ? instructions.trim().slice(0, 20000) : ''
+    const prompt = normalizeInitiativeInstructions(instructions)
     if (!prompt) return { ok: false, error: '主动触发规则不能为空。' }
-    const sent = sendBridge({ type: 'response.create', instructions: prompt })
-    debugLog('ipc.qwen.initiative', { sent, instructionsLength: prompt.length })
+    const command = buildInitiativeCommand(activeRuntime, prompt)
+    const sent = sendSessionCommand(command)
+    debugLog('ipc.qwen.initiative', {
+      sent,
+      runtime: activeRuntime,
+      commandType: command.type,
+      instructionsLength: prompt.length,
+    })
+    return sent ? { ok: true } : { ok: false, error: '实时会话尚未连接。' }
+  })
+  ipcMain.handle('qwen:text', (_event, rawText) => {
+    const text = typeof rawText === 'string' ? rawText.trim().slice(0, 20000) : ''
+    if (!text) return { ok: false, error: '文字消息不能为空。' }
+    const sent = sendSessionCommand({ type: 'text', data: text })
+    debugLog('ipc.qwen.text', {
+      sent,
+      runtime: activeRuntime,
+      textLength: text.length,
+    })
     return sent ? { ok: true } : { ok: false, error: '实时会话尚未连接。' }
   })
   const normalizeVideoPayload = (payload) => {
-    if (typeof payload === 'string') return { data: payload, mode: 'default' }
+    if (typeof payload === 'string') return { data: payload, mode: 'default', requestId: '' }
     return {
       data: typeof payload?.data === 'string' ? payload.data : '',
       mode: typeof payload?.mode === 'string' ? payload.mode : 'default',
+      requestId: typeof payload?.requestId === 'string' ? payload.requestId : '',
     }
   }
-  ipcMain.on('qwen:audio', (_event, base64) => sendBridge({ type: 'audio', data: base64 }))
+  ipcMain.on('qwen:audio', (_event, base64) => sendSessionCommand({ type: 'audio', data: base64 }))
   ipcMain.on('qwen:video', (_event, payload) => {
     const video = normalizeVideoPayload(payload)
-    sendBridge({ type: 'video', data: video.data })
+    sendSessionCommand(activeRuntime === 'harness'
+      ? { type: 'frame', data: video.data, mode: video.mode, requestId: video.requestId }
+      : { type: 'video', data: video.data })
   })
   ipcMain.on('qwen:video-flush', (_event, payload) => {
     const video = normalizeVideoPayload(payload)
-    sendBridge({ type: 'video.flush', data: video.data, mode: video.mode })
+    sendSessionCommand(activeRuntime === 'harness'
+      ? { type: 'frame', data: video.data, mode: video.mode, requestId: video.requestId }
+      : { type: 'video.flush', data: video.data, mode: video.mode })
   })
   ipcMain.on('qwen:tool-result', (_event, payload) => {
     if (!payload || typeof payload !== 'object') {
@@ -1134,6 +1600,17 @@ app.whenReady().then(async () => {
     })
     const sent = sendBridge({ type: 'tool.result', callId: payload.callId, output: payload.output })
     debugLog('ipc.qwen.tool_result.forwarded', { callId: payload.callId, sent })
+  })
+  ipcMain.on('harness:action-result', (_event, payload) => {
+    if (!payload || typeof payload !== 'object') return
+    const sent = sendHarness({
+      type: 'action.result',
+      actionId: typeof payload.actionId === 'string' ? payload.actionId : '',
+      ok: Boolean(payload.ok),
+      result: payload.result ?? null,
+      error: payload.error ?? null,
+    })
+    debugLog('ipc.harness.action_result.forwarded', { actionId: payload.actionId, sent, ok: Boolean(payload.ok) })
   })
 
   ipcMain.handle('overlay:show', async (_event, source) => {
@@ -1182,6 +1659,7 @@ app.whenReady().then(async () => {
   mainWindow.on('closed', () => {
     debugLog('electron.window.closed')
     stopBridge()
+    stopHarness()
     if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy()
     mainWindow = undefined
   })

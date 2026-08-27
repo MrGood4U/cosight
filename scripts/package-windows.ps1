@@ -49,6 +49,7 @@ $buildVenv = Join-Path $projectRoot '.venv-packaging'
 $buildPython = Join-Path $buildVenv 'Scripts\python.exe'
 $pythonDist = Join-Path $projectRoot 'build\python'
 $pythonWork = Join-Path $projectRoot 'build\pyinstaller-work'
+$harnessDist = Join-Path $projectRoot 'build\harness'
 $electronBuilder = Join-Path $projectRoot 'node_modules\.bin\electron-builder.cmd'
 
 if ($Clean) {
@@ -56,6 +57,7 @@ if ($Clean) {
     $buildVenv,
     $pythonDist,
     $pythonWork,
+    $harnessDist,
     (Join-Path $projectRoot 'release')
   )) {
     if (Test-Path -LiteralPath $path) {
@@ -85,10 +87,14 @@ if (-not $SkipNpmCi) {
   Invoke-Checked $npm @('ci')
 }
 
-Write-Host '[3/6] Building the renderer...' -ForegroundColor Cyan
+Write-Host '[3/7] Building the Go Harness...' -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot 'build-harness.ps1')
+if ($LASTEXITCODE -ne 0) { throw "Harness build failed ($LASTEXITCODE)." }
+
+Write-Host '[4/7] Building the renderer...' -ForegroundColor Cyan
 Invoke-Checked $npm @('run', 'build')
 
-Write-Host '[4/6] Bundling the Python realtime bridge...' -ForegroundColor Cyan
+Write-Host '[5/7] Bundling the Python realtime bridge...' -ForegroundColor Cyan
 if (Test-Path -LiteralPath $pythonDist) {
   Remove-Item -LiteralPath $pythonDist -Recurse -Force
 }
@@ -122,8 +128,8 @@ if (-not (Test-Path -LiteralPath $electronBuilder)) {
   throw 'electron-builder was not found. Run npm ci first.'
 }
 
-Write-Host '[5/6] Building the Windows installer...' -ForegroundColor Cyan
+Write-Host '[6/7] Building the Windows installer...' -ForegroundColor Cyan
 Invoke-Checked $electronBuilder @('--win', 'nsis', '--x64', '--publish', 'never')
 
-Write-Host '[6/6] Packaging complete.' -ForegroundColor Green
+Write-Host '[7/7] Packaging complete.' -ForegroundColor Green
 Get-ChildItem -LiteralPath (Join-Path $projectRoot 'release') -Filter '*.exe' | Select-Object FullName, Length

@@ -1,8 +1,9 @@
-# On-screen writing instructions
+# On-screen writing sub-tool of Drawing
 
 当前会话启用了一个覆盖在用户共享屏幕上的透明写字层。你可以使用
 `show_caption` 工具在屏幕上显示简短、清晰的文字、标签或提示。这里的写字能力
-是智能体主动添加的视觉文字，不是 Core 自动生成的语音字幕，也不是绘画笔画。
+是统一 Drawing 能力中的文字子工具，不是 Core 自动生成的语音字幕，也不是
+绘画笔画。它不能作为独立的 Role 能力授权。
 
 ## 写字工具
 

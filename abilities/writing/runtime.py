@@ -1,4 +1,4 @@
-"""Model-facing contract for the optional on-screen writing ability."""
+"""Backwards-compatible internal text tool for the unified Drawing ability."""
 
 from pathlib import Path
 

@@ -12,7 +12,7 @@ Cosight 的核心是“对话 + 屏幕视觉 + 语音交互 + 屏幕交互”：
 - 模型可以看见用户分享的整个屏幕或指定窗口。
 - 模型可以通过语音回应，用户可以选择麦克风和音频输出设备。
 - 在 Role 授权绘画能力并分享整个屏幕后，模型可以在用户电脑的实际屏幕上绘制标记、箭头、圆圈、方框等图形，并接收包含绘制结果的后续屏幕帧，从而检查和修正自己的绘画。
-- Role 可以决定模型能否使用绘画、写字、听觉、语音输出和主动性等能力。
+- Role 可以决定模型能否使用绘画（包含写字）、听觉、语音输出和主动性等能力。
 - Core 字幕功能可以把模型的语音回复转换为字幕并显示在屏幕上。
 
 Cosight 不把智能体固定成一种身份。用户可以创建多个 Role，并在不同对话开始前选择不同角色。每个角色都可以拥有独立的身份、目标、行为、对话流程、约束、语种、音色、知识和能力组合。
@@ -22,16 +22,16 @@ Cosight 不把智能体固定成一种身份。用户可以创建多个 Role，�
 - **实时对话**：通过 Python bridge 使用 WebSocket 连接 Qwen Omni Realtime 或其他兼容的实时模型。
 - **屏幕视觉**：分享整个显示器或窗口，让模型理解当前画面。
 - **听觉与语音输出**：使用选定的麦克风作为输入，并通过选定的 Windows 音频输出设备播放模型语音。
-- **屏幕绘画**：在整个屏幕捕获模式下，模型可以使用透明桌面覆盖层绘制图形，并看到自己的绘制结果。
-- **写字能力**：由 Role 授权，模型可以在实际屏幕上写入文字、标签和提示。
+- **屏幕绘画**：在整个屏幕捕获模式下，Role 授权的统一绘画能力可以使用透明桌面覆盖层绘制图形、文字、标签和提示，并看到自己的绘制结果。
 - **Core 字幕**：Settings 中的核心开关，用于显示模型语音回复的字幕，不需要模型额外调用工具。
+- **文字输入**：聊天会话中的文字消息会复用 Listen 渠道，进入与语音相同的后续处理流程。
 - **Role 角色系统**：创建和编辑可复用的角色身份与行为配置。
-- **多个模型配置**：为每个模型保存自定义别名、实时 URL、模型名称和 API Key，并选择当前使用的模型。
+- **多个模型配置**：保留原有单模型实时链路，也可以在模型页面开启 Harness，分别配置 Brain、Listen、Speak 和 See；Draw 使用本地透明画布执行器，不需要模型。
 - **聊天上下文导入导出**：可以导出文本消息和能力调用记录，也可以导入之前的聊天记录作为上下文。导出文件不会嵌入屏幕截图或音视频媒体文件。
 
 ### 屏幕捕获说明
 
-绘画、写字和 Core 字幕需要分享整个显示器，因为透明覆盖层需要准确定位在真实桌面上。窗口捕获可以用于视觉理解，但不会启用依赖全屏坐标的透明覆盖层能力。
+绘画（包括屏幕写字）和 Core 字幕需要分享整个显示器，因为透明覆盖层需要准确定位在真实桌面上。窗口捕获可以用于视觉理解，但不会启用依赖全屏坐标的透明覆盖层能力。
 
 ## 如何使用
 
@@ -86,7 +86,8 @@ URL 和 API Key。模型别名用于区分多个使用相同模型的配置。�
 
 - Windows 10 或更高版本
 - Node.js 和 npm
-- Python 3.12 或更高版本
+- Python 3.12 或更高版本（旧的单模型模式和 Windows 打包需要）
+- Go 1.27 或更高版本（Harness 模式和 Windows 打包需要）
 - 一个兼容的实时模型服务地址和 API Key
 
 安装 JavaScript 和 Python 依赖：
@@ -94,6 +95,9 @@ URL 和 API Key。模型别名用于区分多个使用相同模型的配置。�
 ```powershell
 npm ci
 python -m pip install -r requirements.txt
+
+# 开启 Harness 开发时构建 Go 编排器：
+npm run build:harness
 ```
 
 启动开发客户端：
@@ -119,12 +123,12 @@ npm run build
 
 项目提供了一键 Windows 打包脚本。脚本会自动完成以下工作：
 
-1. 创建独立的打包虚拟环境。
-2. 安装 Python bridge 及其依赖。
+1. 构建独立的 Go Harness。
+2. 创建独立的 Python 打包虚拟环境并安装 bridge 依赖。
 3. 使用 PyInstaller 打包 realtime bridge 和 prompt preview 两个 Python 入口。
 4. 构建 Vite 前端。
 5. 使用 Electron Builder 生成 x64 NSIS 安装程序。
-6. 把 Python 运行时、模型依赖、官方示例角色和能力 prompt 一起放入安装包。
+6. 把 Go Harness、Python 运行时、模型依赖、官方示例角色和能力 prompt 一起放入安装包。
 
 执行普通打包：
 
@@ -161,9 +165,10 @@ release/Cosight-Setup-<version>-x64.exe
 electron/                 Electron 主进程、preload 和桌面透明覆盖层
 src/                      React 前端和本地化 UI
 python/                   Qwen Omni 实时 bridge 和 prompt preview
+harness/                  Go 多模型 Harness 和固定 JSON 信号协议
 abilities/                可扩展能力及其 prompt、运行时代码
-  drawing/                绘画 prompt 和绘画运行时契约
-  writing/                写字 prompt 和写字运行时契约
+  drawing/                统一的绘画与屏幕写字运行时契约
+  writing/                向后兼容的内部写字工具契约
   initiative/             客户端主动性运行时
 data/sample-roles.json    随应用发布的官方示例角色
 packaging/                PyInstaller 配置
@@ -189,6 +194,18 @@ Cosight 的用户数据保存在：
 ```
 
 日志会记录协议事件、能力调用结果、异常、进程退出和数据长度，但不会记录原始音频或视频帧。
+
+开启多模型 Harness 后，会额外生成 `cosight-harness.log`。其中包含
+`listen`、`see`、`brain`、`speak`、`draw` 各阶段的开始/结束时间、请求 ID、
+等待/超时、模型响应长度、See 缓存命中和屏幕帧捕获状态。排查一次对话时，
+可用同一个 `requestId` 或 `listenEventId` 串起完整链路：
+
+```text
+%APPDATA%\cosight\logs\electron.log
+%APPDATA%\cosight\logs\cosight-harness.log
+```
+
+日志不会保存 API Key、完整提示词、原始截图、原始音频或视频帧。
 
 ## 官方示例角色
 

@@ -29,6 +29,7 @@
       const canvas = document.getElementById('canvas')
       const context = canvas.getContext('2d')
       let strokes = []
+      let debugBoxes = []
       const captions = { core: null, writing: null }
       const captionTimers = { core: null, writing: null }
 
@@ -117,6 +118,43 @@
         })
       }
 
+      function renderDebugBoxes() {
+        debugBoxes.forEach((box) => {
+          const x = clamp(box?.x, 0, 1, 0) * window.innerWidth
+          const y = clamp(box?.y, 0, 1, 0) * window.innerHeight
+          const width = clamp(box?.width, 0, 1, 0) * window.innerWidth
+          const height = clamp(box?.height, 0, 1, 0) * window.innerHeight
+          if (width <= 0 || height <= 0) return
+          const isText = box?.kind === 'text'
+          context.save()
+          context.strokeStyle = '#ffd400'
+          context.lineWidth = isText ? 2 : 3
+          context.globalAlpha = isText ? 0.78 : 0.96
+          context.setLineDash(isText ? [7, 4] : [])
+          context.strokeRect(x, y, width, height)
+          const label = typeof box?.label === 'string' ? box.label : ''
+          if (label) {
+            const fontSize = 12
+            const paddingX = 5
+            const paddingY = 3
+            context.setLineDash([])
+            context.font = `600 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`
+            const labelWidth = Math.min(Math.max(24, context.measureText(label).width + paddingX * 2), Math.max(24, width))
+            const labelHeight = fontSize + paddingY * 2
+            const labelX = Math.max(0, Math.min(window.innerWidth - labelWidth, x))
+            const labelY = y >= labelHeight ? y - labelHeight : Math.min(window.innerHeight - labelHeight, y + height)
+            context.fillStyle = 'rgba(17, 24, 39, 0.88)'
+            context.fillRect(labelX, labelY, labelWidth, labelHeight)
+            context.fillStyle = '#ffd400'
+            context.globalAlpha = 1
+            context.textAlign = 'left'
+            context.textBaseline = 'middle'
+            context.fillText(label, labelX + paddingX, labelY + labelHeight / 2, Math.max(1, labelWidth - paddingX * 2))
+          }
+          context.restore()
+        })
+      }
+
       function render() {
         context.clearRect(0, 0, window.innerWidth, window.innerHeight)
         strokes.forEach((stroke) => {
@@ -138,12 +176,14 @@
         })
         renderCaption(captions.core)
         renderCaption(captions.writing)
+        renderDebugBoxes()
         context.globalAlpha = 1
       }
 
       window.addEventListener('resize', resize)
       window.cosightOverlay?.onClear(() => {
         strokes = []
+        debugBoxes = []
         captions.core = null
         captions.writing = null
         Object.keys(captionTimers).forEach((layer) => {
@@ -153,6 +193,7 @@
         render()
       })
       window.cosightOverlay?.onDraw((payload) => {
+        if (Array.isArray(payload?.debugBoxes)) debugBoxes = payload.debugBoxes
         if (payload?.clear) strokes = []
         const nextStrokes = Array.isArray(payload?.strokes) ? payload.strokes : []
         strokes.push(...nextStrokes.filter((stroke) => Array.isArray(stroke?.points) && stroke.points.length >= 2))

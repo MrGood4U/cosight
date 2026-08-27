@@ -1,0 +1,108 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  HARNESS_MODULES,
+  buildInitiativeCommand,
+  configuredHarnessModels,
+  configuredHarnessSettings,
+  normalizeInitiativeInstructions,
+  normalizeInitiativeTimeout,
+  normalizeRoleAbilities,
+  normalizeScreenVisionChangeThreshold,
+  normalizeScreenVisionInterval,
+  normalizeUsageRecord,
+  publicHarnessModel,
+} from '../../electron/runtime-utils.mjs'
+
+test('role abilities migrate writing and subtitles into drawing', () => {
+  assert.deepEqual(
+    normalizeRoleAbilities(['writing', 'subtitles', 'drawing', 'drawing', 'unknown', 'initiative']),
+    ['drawing', 'initiative'],
+  )
+})
+
+test('screen vision and initiative settings are clamped to safe ranges', () => {
+  assert.equal(normalizeScreenVisionInterval('0'), 1)
+  assert.equal(normalizeScreenVisionInterval('999'), 60)
+  assert.equal(normalizeScreenVisionInterval('not-a-number'), 5)
+  assert.equal(normalizeScreenVisionChangeThreshold('-1'), 1)
+  assert.equal(normalizeScreenVisionChangeThreshold('999'), 100)
+  assert.equal(normalizeScreenVisionChangeThreshold('not-a-number'), 8)
+  assert.equal(normalizeInitiativeTimeout('1'), 5)
+  assert.equal(normalizeInitiativeTimeout('999'), 300)
+  assert.equal(normalizeInitiativeTimeout('not-a-number'), 10)
+})
+
+test('Harness settings keep all configured context controls in bounds', () => {
+  assert.deepEqual(configuredHarnessSettings({}), {
+    seeMinIntervalMs: 5000,
+    recentConversationCount: 20,
+    recentVisionCount: 1,
+  })
+  assert.deepEqual(configuredHarnessSettings({
+    harnessSettings: {
+      seeMinIntervalMs: 999999,
+      recentConversationCount: 0,
+      recentVisionCount: 999,
+    },
+  }), {
+    seeMinIntervalMs: 60000,
+    recentConversationCount: 1,
+    recentVisionCount: 20,
+  })
+})
+
+test('Harness model configuration always exposes the four model slots', () => {
+  const models = configuredHarnessModels({
+    harnessModels: {
+      brain: { id: 'brain-1', name: 'mock-brain', apiKey: 'secret' },
+      ignored: { id: 'ignored' },
+    },
+  })
+  assert.deepEqual(Object.keys(models), HARNESS_MODULES)
+  assert.equal(models.brain.name, 'mock-brain')
+  assert.equal(models.listen, null)
+  assert.equal(models.ignored, undefined)
+  assert.deepEqual(publicHarnessModel(models.brain), {
+    id: 'brain-1',
+    alias: '',
+    name: 'mock-brain',
+    url: undefined,
+    voice: '',
+    hasApiKey: true,
+  })
+  assert.equal(publicHarnessModel(null), null)
+})
+
+test('usage records normalize provider token field variants without exposing keys', () => {
+  assert.deepEqual(normalizeUsageRecord({
+    recordedAt: '2026-08-28T12:00:00Z',
+    sessionId: 'session-1',
+    module: 'brain',
+    model: 'mock-brain',
+    usage: { prompt_tokens: 12.4, completion_tokens: 7.6 },
+    apiKey: 'must-not-be-copied',
+  }), {
+    timestamp: '2026-08-28T12:00:00Z',
+    sessionId: 'session-1',
+    module: 'brain',
+    model: 'mock-brain',
+    inputTokens: 12,
+    outputTokens: 8,
+    totalTokens: 20,
+  })
+  assert.equal(normalizeUsageRecord({ model: 'mock-brain', totalTokens: 0 }), null)
+})
+
+test('initiative routing preserves legacy mode and sends a Harness command in Harness mode', () => {
+  const prompt = ` ${'a'.repeat(21000)} `
+  const harnessCommand = buildInitiativeCommand('harness', prompt)
+  const legacyCommand = buildInitiativeCommand('legacy', prompt)
+  assert.equal(harnessCommand.type, 'initiative')
+  assert.equal(harnessCommand.data.length, 20000)
+  assert.equal(legacyCommand.type, 'response.create')
+  assert.equal(legacyCommand.instructions.length, 20000)
+  assert.equal(normalizeInitiativeInstructions('   '), '')
+  assert.equal(buildInitiativeCommand('harness', '   '), null)
+})

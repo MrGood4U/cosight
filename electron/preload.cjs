@@ -15,6 +15,7 @@ function reportRendererError(payload) {
 
 contextBridge.exposeInMainWorld('cosight', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  getUsage: (filters) => ipcRenderer.invoke('usage:get', filters),
   pickRoleKnowledgeFiles: () => ipcRenderer.invoke('roles:pick-files'),
   pickRoleAvatar: () => ipcRenderer.invoke('roles:pick-avatar'),
   previewRolePrompt: (role) => ipcRenderer.invoke('roles:preview-prompt', role),
@@ -24,6 +25,10 @@ contextBridge.exposeInMainWorld('cosight', {
   saveModel: (model) => ipcRenderer.invoke('settings:save-model', model),
   selectModel: (modelId) => ipcRenderer.invoke('settings:select-model', modelId),
   deleteModel: (modelId) => ipcRenderer.invoke('settings:delete-model', modelId),
+  setModelMode: (mode) => ipcRenderer.invoke('settings:set-model-mode', mode),
+  saveHarnessModel: (model) => ipcRenderer.invoke('settings:save-harness-model', model),
+  deleteHarnessModel: (module) => ipcRenderer.invoke('settings:delete-harness-model', module),
+  saveHarnessSettings: (settings) => ipcRenderer.invoke('settings:save-harness-settings', settings),
   listDesktopSources: () => ipcRenderer.invoke('desktop:list-sources'),
   exportSession: (artifact) => ipcRenderer.invoke('session:export', artifact),
   importSession: () => ipcRenderer.invoke('session:import'),
@@ -33,11 +38,13 @@ contextBridge.exposeInMainWorld('cosight', {
   updateSessionCapabilities: (capabilities) => ipcRenderer.send('qwen:capabilities-update', capabilities),
   triggerInitiative: (instructions) => ipcRenderer.invoke('qwen:initiative', instructions),
   sendAudioChunk: (base64) => ipcRenderer.send('qwen:audio', base64),
-  sendVideoFrame: (base64, flush = false, mode = 'default') => ipcRenderer.send(
+  sendTextMessage: (text) => ipcRenderer.invoke('qwen:text', text),
+  sendVideoFrame: (base64, flush = false, mode = 'default', requestId = '') => ipcRenderer.send(
     flush ? 'qwen:video-flush' : 'qwen:video',
-    { data: base64, mode },
+    { data: base64, mode, requestId },
   ),
   sendToolResult: (callId, output) => ipcRenderer.send('qwen:tool-result', { callId, output }),
+  sendHarnessActionResult: (payload) => ipcRenderer.send('harness:action-result', payload),
   showOverlay: (source) => ipcRenderer.invoke('overlay:show', source),
   hideOverlay: () => ipcRenderer.invoke('overlay:hide'),
   drawOnOverlay: (payload) => ipcRenderer.invoke('overlay:draw', payload),

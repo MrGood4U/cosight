@@ -8,6 +8,12 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
+    "build:harness": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-harness.ps1",
+    "test:electron": "node --test tests/electron/*.test.mjs",
+    "test:harness": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-harness.ps1",
+    "test:integration": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-harness.ps1 -Integration",
+    "test": "npm run test:electron && npm run test:harness && npm run test:integration",
+    "verify": "npm test && npm run build && npm run build:harness",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "sync:sample-roles": "node scripts/sync-sample-roles.mjs",
     "start": "electron ."
@@ -43,6 +49,13 @@
         ]
       },
       {
+        "from": "build/harness",
+        "to": "harness",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "data/sample-roles.json",
         "to": "data/sample-roles.json"
       }
@@ -60,6 +73,7 @@
           ]
         }
       ],
+      "icon": "public/cosight-icon.ico",
       "artifactName": "Cosight-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
@@ -68,7 +82,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Cosight"
+      "shortcutName": "Cosight",
+      "installerIcon": "public/cosight-icon.ico",
+      "uninstallerIcon": "public/cosight-icon.ico"
     }
   }
 }

@@ -209,6 +209,10 @@ def build_role_instructions(
         if drawing_policy:
             lines.append("Drawing policy:\n" + drawing_policy[:20000])
 
+    speech_style = str(role.get("speechStyle", "") if isinstance(role, dict) else "").strip()
+    if speech_style:
+        lines.append("Speech style:\n" + speech_style[:4000])
+
     if writing_enabled:
         writing_policy = str(
             (role.get("writingPolicy") or role.get("subtitlesPolicy", ""))
@@ -599,6 +603,14 @@ class BridgeCallback(OmniRealtimeCallback):
         elif event_type == "response.done":
             response_info = response.get("response") or {}
             output_types = [item.get("type") for item in response_info.get("output", []) if isinstance(item, dict)]
+            usage = response_info.get("usage") or response.get("usage")
+            if usage:
+                emit({
+                    "type": "model.usage",
+                    "module": "legacy",
+                    "model": self.bridge.model_name if self.bridge else "",
+                    "usage": usage,
+                })
             emit({
                 "type": "assistant.response.done",
                 "responseId": response_info.get("id") or response.get("response_id"),
@@ -646,6 +658,7 @@ class OmniBridge:
     def __init__(self) -> None:
         self.conversation: Optional[Any] = None
         self.callback: Optional[BridgeCallback] = None
+        self.model_name = ""
         self.ready_event = threading.Event()
         self.session_updated_event = threading.Event()
         self.lock = threading.Lock()
@@ -857,6 +870,7 @@ class OmniBridge:
             raise RuntimeError("未找到 DASHSCOPE_API_KEY。")
 
         model_name = (model or DEFAULT_MODEL).strip()
+        self.model_name = model_name
         realtime_url = (url or DEFAULT_URL).strip()
         diagnostics = diagnostic_label(model_name, realtime_url)
         debug_log("bridge.start", {
@@ -1024,6 +1038,37 @@ class OmniBridge:
                         pending_result["output"],
                     )
 
+    def text(self, data: str) -> None:
+        """Inject a typed user turn through the same Realtime conversation."""
+        prompt = str(data or "").strip()[:20000]
+        if not prompt:
+            debug_log("text.input.ignored", {"reason": "empty"})
+            return
+        if not self.conversation or not self.ready_event.is_set():
+            debug_log("text.input.ignored", {"reason": "bridge_not_ready", "textLength": len(prompt)})
+            return
+        try:
+            with self.input_lock:
+                if not self.conversation or not self.ready_event.is_set():
+                    debug_log("text.input.ignored", {"reason": "bridge_not_ready_after_lock", "textLength": len(prompt)})
+                    return
+                self.conversation.create_item({
+                    "id": "item_" + uuid.uuid4().hex,
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                })
+                debug_log("text.input.accepted", {"textLength": len(prompt)})
+                emit({"type": "user.transcript", "text": prompt})
+                with self.response_state_lock:
+                    self._queue_response_request_locked(None, "text", delay=0)
+        except Exception as error:
+            debug_log("text.input.error", {"textLength": len(prompt), "error": str(error)})
+            emit({
+                "type": "bridge.error",
+                "message": f"文字消息发送失败，会话仍保持运行：{error}",
+            })
+
     def video(self, data: str, flush: bool = False, mode: str = "default") -> None:
         if not self.conversation or not self.ready_event.is_set():
             return
@@ -1177,6 +1222,8 @@ def main() -> None:
                 debug_log("electron.command.audio", {"length": len(raw_command)})
             elif '"type":"video"' in raw_command or '"type": "video"' in raw_command:
                 debug_log("electron.command.video", {"length": len(raw_command)})
+            elif '"type":"text"' in raw_command or '"type": "text"' in raw_command:
+                debug_log("electron.command.text", {"length": len(raw_command)})
             elif '"type":"start"' in raw_command or '"type": "start"' in raw_command:
                 debug_log("electron.command.start", {"length": len(raw_command), "hasImportedContext": "importedContext" in raw_command})
             else:
@@ -1201,6 +1248,8 @@ def main() -> None:
                     )
                 elif kind == "audio":
                     bridge.audio(command.get("data", ""))
+                elif kind == "text":
+                    bridge.text(command.get("data", ""))
                 elif kind == "video":
                     bridge.video(command.get("data", ""))
                 elif kind == "video.flush":
@@ -1222,7 +1271,7 @@ def main() -> None:
                 debug_log("bridge.command_error", {
                     "kind": kind or "unknown",
                     "error": str(error),
-                    "raw": raw_command,
+                    "raw": None if kind == "text" else raw_command,
                 })
                 emit({"type": "bridge.error", "message": f"处理命令 {kind or 'unknown'} 失败：{error}"})
                 if kind == "start":
