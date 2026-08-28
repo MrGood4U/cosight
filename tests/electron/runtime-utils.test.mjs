@@ -15,6 +15,12 @@ import {
   publicHarnessModel,
 } from '../../electron/runtime-utils.mjs'
 
+import {
+  emptyConversationSummary,
+  normalizeConversationSummary,
+  normalizeImportedSessionArtifact,
+} from '../../src/app/shared.js'
+
 test('role abilities migrate writing and subtitles into drawing', () => {
   assert.deepEqual(
     normalizeRoleAbilities(['writing', 'subtitles', 'drawing', 'drawing', 'unknown', 'initiative']),
@@ -105,4 +111,31 @@ test('initiative routing preserves legacy mode and sends a Harness command in Ha
   assert.equal(legacyCommand.instructions.length, 20000)
   assert.equal(normalizeInitiativeInstructions('   '), '')
   assert.equal(buildInitiativeCommand('harness', '   '), null)
+})
+
+test('conversation summaries stay compact and preserve the import/export shape', () => {
+  const summary = normalizeConversationSummary({
+    topic: '  当前会话  ',
+    facts: ['用户已选择 Harness', '', '第二条'],
+    decisions: [],
+    pendingTasks: ['继续测试'],
+    lastIntent: '检查会话摘要',
+  })
+  assert.deepEqual(summary, {
+    topic: '当前会话',
+    facts: ['用户已选择 Harness', '第二条'],
+    decisions: [],
+    pendingTasks: ['继续测试'],
+    lastIntent: '检查会话摘要',
+    updatedAt: '',
+  })
+
+  const artifact = normalizeImportedSessionArtifact({
+    format: 'cosight-session',
+    version: 1,
+    messages: [],
+    conversationSummary: summary,
+  })
+  assert.deepEqual(artifact.conversationSummary, summary)
+  assert.deepEqual(normalizeConversationSummary(undefined), emptyConversationSummary())
 })

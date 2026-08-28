@@ -25,6 +25,7 @@ type startConfig struct {
 	ScreenSharing           bool                    `json:"screenSharing"`
 	RecentConversationCount int                     `json:"recentConversationCount"`
 	RecentVisionCount       int                     `json:"recentVisionCount"`
+	ConversationSummary     conversationSummary     `json:"conversationSummary"`
 	InitiativeEnabled       bool                    `json:"initiativeEnabled"`
 	ListeningEnabled        bool                    `json:"listeningEnabled"`
 	SpeakingEnabled         bool                    `json:"speakingEnabled"`
@@ -147,7 +148,7 @@ type visionPayload struct {
 	Scene           string         `json:"scene"`
 	Objects         []visionObject `json:"objects"`
 	TextBlocks      []textBlock    `json:"textBlocks"`
-	Summary         string         `json:"summary"`
+	VisionSummary   string         `json:"vision_summary"`
 }
 
 type listenPayload struct {
@@ -190,6 +191,16 @@ type conversationMessage struct {
 	Role      string `json:"role"`
 	Text      string `json:"text"`
 	CreatedAt string `json:"createdAt"`
+	Revision  uint64 `json:"-"`
+}
+
+type conversationSummary struct {
+	Topic        string   `json:"topic"`
+	Facts        []string `json:"facts"`
+	Decisions    []string `json:"decisions"`
+	PendingTasks []string `json:"pendingTasks"`
+	LastIntent   string   `json:"lastIntent"`
+	UpdatedAt    string   `json:"updatedAt,omitempty"`
 }
 
 type seeFuture struct {

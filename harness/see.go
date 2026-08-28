@@ -374,13 +374,15 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		map[string]any{"type": "text", "text": seeUserPrompt()},
 		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64," + frameBase64}},
 	}, nil)
+	seeDurationMS := durationMS(startedAt)
 	if err != nil {
 		emitLog("see.model.failed", map[string]any{
 			"requestId":  future.requestID,
 			"model":      profile.Name,
-			"durationMs": durationMS(startedAt),
+			"durationMs": seeDurationMS,
 			"error":      err.Error(),
 		})
+		h.recordLatency("see", seeDurationMS)
 		h.logActionFailure("see", "", "SEE_FAILED", err.Error())
 		future.resolve(nil, err)
 		return
@@ -388,9 +390,10 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 	emitLog("see.model.completed", map[string]any{
 		"requestId":    future.requestID,
 		"model":        profile.Name,
-		"durationMs":   durationMS(startedAt),
+		"durationMs":   seeDurationMS,
 		"contentBytes": len(content),
 	})
+	h.recordLatency("see", seeDurationMS)
 	parseStartedAt := time.Now()
 	modelOutput, err := parseVisionOutput(content)
 	if err != nil {
@@ -407,12 +410,12 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		return
 	}
 	emitLog("see.parse.completed", map[string]any{
-		"requestId":       future.requestID,
-		"parseDurationMs": durationMS(parseStartedAt),
-		"objectCount":     len(modelOutput.Objects),
-		"textBlockCount":  len(modelOutput.TextBlocks),
-		"sceneBytes":      len(modelOutput.Scene),
-		"summaryBytes":    len(modelOutput.Summary),
+		"requestId":          future.requestID,
+		"parseDurationMs":    durationMS(parseStartedAt),
+		"objectCount":        len(modelOutput.Objects),
+		"textBlockCount":     len(modelOutput.TextBlocks),
+		"sceneBytes":         len(modelOutput.Scene),
+		"visionSummaryBytes": len(modelOutput.VisionSummary),
 	})
 	payload := &visionPayload{
 		FrameID:         newID("frame"),
@@ -422,7 +425,7 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		Scene:           truncate(modelOutput.Scene, maxTextLength),
 		Objects:         modelOutput.Objects,
 		TextBlocks:      modelOutput.TextBlocks,
-		Summary:         truncate(modelOutput.Summary, maxTextLength),
+		VisionSummary:   truncate(modelOutput.VisionSummary, maxTextLength),
 	}
 	s := signal{
 		Schema: protocolSchema, Version: protocolVersion, Type: "see.completed",
@@ -455,16 +458,16 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		"objectCount":         len(payload.Objects),
 		"textBlockCount":      len(payload.TextBlocks),
 		"hasScene":            strings.TrimSpace(payload.Scene) != "",
-		"hasSummary":          strings.TrimSpace(payload.Summary) != "",
+		"hasVisionSummary":    strings.TrimSpace(payload.VisionSummary) != "",
 		"referenceFrameBytes": len(frameBase64),
 	})
 }
 
 type visionModelOutput struct {
-	Scene      string         `json:"scene"`
-	Objects    []visionObject `json:"objects"`
-	TextBlocks []textBlock    `json:"textBlocks"`
-	Summary    string         `json:"summary"`
+	Scene         string         `json:"scene"`
+	Objects       []visionObject `json:"objects"`
+	TextBlocks    []textBlock    `json:"textBlocks"`
+	VisionSummary string         `json:"vision_summary"`
 }
 
 func parseVisionOutput(raw string) (visionModelOutput, error) {
@@ -479,21 +482,27 @@ func parseVisionOutput(raw string) (visionModelOutput, error) {
 			return output, err
 		}
 	} else {
-		// Our envelope keeps summary/textBlocks, while each item inside it can
+		// Our envelope keeps vision_summary/textBlocks, while each item inside it can
 		// use Qwen-VL's official bbox_2d field.
 		var envelope struct {
-			Objects    json.RawMessage `json:"objects"`
-			TextBlocks json.RawMessage `json:"textBlocks"`
-			Scene      string          `json:"scene"`
-			Summary    string          `json:"summary"`
-			BBox       json.RawMessage `json:"bbox"`
-			BBox2D     []float64       `json:"bbox_2d"`
+			Objects       json.RawMessage `json:"objects"`
+			TextBlocks    json.RawMessage `json:"textBlocks"`
+			Scene         string          `json:"scene"`
+			VisionSummary string          `json:"vision_summary"`
+			LegacySummary string          `json:"summary"`
+			BBox          json.RawMessage `json:"bbox"`
+			BBox2D        []float64       `json:"bbox_2d"`
 		}
 		if err := json.Unmarshal([]byte(encoded), &envelope); err != nil {
 			return output, err
 		}
 		output.Scene = envelope.Scene
-		output.Summary = envelope.Summary
+		output.VisionSummary = envelope.VisionSummary
+		if output.VisionSummary == "" {
+			// Accept the pre-rename field from older See providers, but never
+			// emit that ambiguous field in the Harness protocol.
+			output.VisionSummary = envelope.LegacySummary
+		}
 		if len(envelope.Objects) > 0 && string(envelope.Objects) != "null" {
 			if err := json.Unmarshal(envelope.Objects, &output.Objects); err != nil {
 				return output, err

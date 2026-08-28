@@ -47,6 +47,11 @@ let harnessProcess
 let harnessBuffer = ''
 let harnessStdoutDecoder
 let harnessStderrDecoder
+let systemAudioProcess
+let systemAudioMuted = false
+let systemAudioListeningEnabled = true
+let systemAudioRemainder = Buffer.alloc(0)
+let systemAudioLastLevelAt = 0
 let activeRuntime = ''
 let selectedDisplaySourceId = ''
 let electronLogPath
@@ -61,11 +66,13 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.mrgood4u.cosight')
 }
 
-// Some Windows machines cannot start Electron's GPU process after the app is
-// installed (the renderer then opens as a blank window). The packaged client
-// does not depend on GPU acceleration for its UI or desktop capture, so use
-// Chromium's software renderer there for a reliable first launch.
-if (process.platform === 'win32' && app.isPackaged) {
+// Some Windows machines cannot start Electron's GPU process (the renderer
+// then opens as a blank window or Electron exits before creating a window).
+// The client does not depend on GPU acceleration for its UI or desktop
+// capture, so use Chromium's software renderer in both development and
+// packaged launches for a reliable first launch.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-gpu')
   app.disableHardwareAcceleration()
 }
 
@@ -135,11 +142,24 @@ function readUsageRecords(filters = {}) {
   })
 }
 
-function debugLog(kind, payload = {}) {
+function normalizeLogLevel(level) {
+  return ['DEBUG', 'INFO', 'ERROR'].includes(level) ? level : ''
+}
+
+function inferredLogLevel(kind) {
+  const normalized = String(kind || '').toLowerCase()
+  for (const marker of ['error', 'failed', 'rejected', 'exception', 'unhandled', 'stderr', 'parse_error', 'send_error', 'kill_error']) {
+    if (normalized.includes(marker)) return 'ERROR'
+  }
+  return 'INFO'
+}
+
+function debugLog(kind, payload = {}, requestedLevel = '') {
   try {
     const logPath = getElectronLogPath()
     mkdirSync(dirname(logPath), { recursive: true })
-    appendFileSync(logPath, `${JSON.stringify({ time: new Date().toISOString(), kind, payload })}\n`, 'utf8')
+    const level = normalizeLogLevel(requestedLevel) || inferredLogLevel(kind)
+    appendFileSync(logPath, `${JSON.stringify({ time: new Date().toISOString(), level, kind, payload })}\n`, 'utf8')
   } catch {
     // Diagnostics must never interfere with the Electron process.
   }
@@ -223,6 +243,34 @@ function safeSessionPayload(value, depth = 0) {
   return result
 }
 
+function normalizeConversationSummary(value) {
+  const text = (input, limit) => Array.from(String(input || '').trim()).slice(0, limit).join('')
+  const items = (input) => Array.isArray(input)
+    ? input.map((item) => text(item, 100)).filter(Boolean).slice(0, 5)
+    : []
+  const summary = value && typeof value === 'object'
+    ? {
+        topic: text(value.topic, 120),
+        facts: items(value.facts),
+        decisions: items(value.decisions),
+        pendingTasks: items(value.pendingTasks),
+        lastIntent: text(value.lastIntent, 160),
+        updatedAt: text(value.updatedAt, 64),
+      }
+    : { topic: '', facts: [], decisions: [], pendingTasks: [], lastIntent: '', updatedAt: '' }
+  const contentLength = () => [summary.topic, summary.lastIntent, ...summary.facts, ...summary.decisions, ...summary.pendingTasks]
+    .reduce((total, item) => total + Array.from(item).length, 0)
+  while (contentLength() > 800) {
+    if (summary.pendingTasks.length) summary.pendingTasks.pop()
+    else if (summary.facts.length) summary.facts.pop()
+    else if (summary.decisions.length) summary.decisions.pop()
+    else if (summary.lastIntent) summary.lastIntent = text(summary.lastIntent, Math.max(0, Array.from(summary.lastIntent).length - 20))
+    else if (summary.topic) summary.topic = text(summary.topic, Math.max(0, Array.from(summary.topic).length - 20))
+    else break
+  }
+  return summary
+}
+
 function normalizeSessionArtifact(value) {
   if (!value || typeof value !== 'object' || value.format !== SESSION_ARTIFACT_FORMAT || value.version !== SESSION_ARTIFACT_VERSION) {
     return { ok: false, error: '文件不是受支持的 Cosight 会话档案。' }
@@ -246,6 +294,9 @@ function normalizeSessionArtifact(value) {
         payload: safeSessionPayload(item?.payload || {}),
       }))
     : []
+  const legacyRoleLanguage = value.role && typeof value.role === 'object' && typeof value.role.language === 'string'
+    ? value.role.language.slice(0, 32)
+    : 'auto'
   const role = value.role && typeof value.role === 'object'
     ? {
         id: typeof value.role.id === 'string' ? value.role.id.slice(0, 160) : '',
@@ -256,7 +307,8 @@ function normalizeSessionArtifact(value) {
         behavior: typeof value.role.behavior === 'string' ? value.role.behavior.slice(0, 20000) : '',
         workflow: typeof value.role.workflow === 'string' ? value.role.workflow.slice(0, 20000) : '',
         constraints: typeof value.role.constraints === 'string' ? value.role.constraints.slice(0, 20000) : '',
-        language: typeof value.role.language === 'string' ? value.role.language.slice(0, 32) : 'auto',
+        listeningLanguage: typeof value.role.listeningLanguage === 'string' ? value.role.listeningLanguage.slice(0, 32) : legacyRoleLanguage,
+        outputLanguage: typeof value.role.outputLanguage === 'string' ? value.role.outputLanguage.slice(0, 32) : legacyRoleLanguage,
         voice: typeof value.role.voice === 'string' ? value.role.voice.slice(0, 80) : '',
         speechStyle: typeof value.role.speechStyle === 'string' ? value.role.speechStyle.slice(0, 4000) : '',
         abilities: Array.isArray(value.role.abilities) ? value.role.abilities.filter((item) => typeof item === 'string').slice(0, 32) : [],
@@ -296,6 +348,7 @@ function normalizeSessionArtifact(value) {
       } : { id: '', name: '', url: '' },
       capabilities: safeSessionPayload(value.capabilities || {}),
       messages,
+      conversationSummary: normalizeConversationSummary(value.conversationSummary),
       capabilityCalls,
     },
   }
@@ -344,7 +397,8 @@ function publicRole(role) {
     behavior: role.behavior || '',
     workflow: role.workflow || '',
     constraints: role.constraints || '',
-    language: role.language || 'auto',
+    listeningLanguage: resolveRoleLanguage(role, 'listeningLanguage'),
+    outputLanguage: resolveRoleLanguage(role, 'outputLanguage'),
     voice: normalizeRoleVoice(role.voice),
     speechStyle: normalizeRoleText(role.speechStyle, 4000),
     avatar: typeof role.avatar === 'string' && role.avatar.startsWith('data:image/') ? role.avatar : '',
@@ -384,6 +438,19 @@ function normalizeRoleVoice(value) {
   return normalizeRoleText(value, 80)
 }
 
+const ROLE_LANGUAGE_VALUES = new Set(['auto', 'zh-CN', 'en-US'])
+
+function normalizeRoleLanguage(value, fallback = 'auto') {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (ROLE_LANGUAGE_VALUES.has(normalized)) return normalized
+  return ROLE_LANGUAGE_VALUES.has(fallback) ? fallback : 'auto'
+}
+
+function resolveRoleLanguage(role, key) {
+  const legacyLanguage = normalizeRoleLanguage(role?.language)
+  return normalizeRoleLanguage(role?.[key], legacyLanguage)
+}
+
 function normalizeRoleForRuntime(role) {
   if (!role || typeof role !== 'object') return null
   const abilities = normalizeRoleAbilities(role.abilities)
@@ -391,6 +458,8 @@ function normalizeRoleForRuntime(role) {
   return {
     ...role,
     abilities,
+    listeningLanguage: resolveRoleLanguage(role, 'listeningLanguage'),
+    outputLanguage: resolveRoleLanguage(role, 'outputLanguage'),
     writingPolicy: normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000),
     speechStyle: normalizeRoleText(role.speechStyle, 4000),
     screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(role.screenVisionIntervalSec) : '',
@@ -413,6 +482,8 @@ function runPromptPreview(roleInput) {
       : [],
   }
   role.abilities = normalizeRoleAbilities(role.abilities)
+  role.listeningLanguage = resolveRoleLanguage(role, 'listeningLanguage')
+  role.outputLanguage = resolveRoleLanguage(role, 'outputLanguage')
   role.writingPolicy = normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000)
   const abilities = new Set(role.abilities)
   const payload = JSON.stringify({
@@ -635,7 +706,17 @@ function refreshOverlayBounds() {
 }
 
 function emit(payload) {
-  mainWindow?.webContents.send('qwen:event', payload)
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    debugLog('renderer.event.not_sent', { type: payload?.type, reason: 'main_window_destroyed' })
+    return false
+  }
+  try {
+    mainWindow.webContents.send('qwen:event', payload)
+    return true
+  } catch (error) {
+    debugLog('renderer.event.send_error', { type: payload?.type, error: serializeError(error) })
+    return false
+  }
 }
 
 function sendBridge(command) {
@@ -793,6 +874,7 @@ function startBridge(config, modelProfile, apiKey) {
     canvasEnabled: Boolean(config?.canvasEnabled),
     writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
     importedContext: config?.importedContext || null,
+    conversationSummary: config?.conversationSummary || null,
   })
   return { ok: true }
 }
@@ -888,8 +970,8 @@ function forwardHarnessPayload(payload) {
   } else if (payload?.type === 'harness.action.failed') {
     debugLog('harness.action.failed', payload)
   } else if (payload?.type === 'harness.log') {
-    const { type, message, ...fields } = payload
-    debugLog(`harness.${message || 'log'}`, fields)
+    const { type, level, message, ...fields } = payload
+    debugLog(`harness.${message || 'log'}`, fields, level)
     if (message === 'model.usage') appendUsageRecord(fields)
   } else if (payload?.type === 'harness.signal') {
     const signal = payload.signal || {}
@@ -904,7 +986,7 @@ function forwardHarnessPayload(payload) {
       payloadSummary: {
         textBytes: typeof signalPayload.text === 'string' ? signalPayload.text.length : undefined,
         sceneBytes: typeof signalPayload.scene === 'string' ? signalPayload.scene.length : undefined,
-        summaryBytes: typeof signalPayload.summary === 'string' ? signalPayload.summary.length : undefined,
+        visionSummaryBytes: typeof signalPayload.vision_summary === 'string' ? signalPayload.vision_summary.length : undefined,
         objectCount: Array.isArray(signalPayload.objects) ? signalPayload.objects.length : undefined,
         textBlockCount: Array.isArray(signalPayload.textBlocks) ? signalPayload.textBlocks.length : undefined,
       },
@@ -929,6 +1011,132 @@ function forwardHarnessPayload(payload) {
 
 function sendSessionCommand(command) {
   return activeRuntime === 'harness' ? sendHarness(command) : sendBridge(command)
+}
+
+function systemAudioCommand() {
+  const configured = process.env.COSIGHT_SYSTEM_AUDIO
+  if (configured) return { command: configured, args: [], cwd: join(__dirname, '..') }
+  const executable = process.platform === 'win32'
+    ? 'cosight-system-audio-loopback.exe'
+    : 'cosight-system-audio-loopback'
+  if (app.isPackaged) {
+    return {
+      command: join(process.resourcesPath, 'system-audio', executable),
+      args: [],
+      cwd: join(process.resourcesPath, 'system-audio'),
+    }
+  }
+  const built = join(__dirname, '..', 'build', 'system-audio', executable)
+  return { command: built, args: [], cwd: join(__dirname, '..') }
+}
+
+function reportSystemAudioLevel(chunk) {
+  const bytes = systemAudioRemainder.length > 0 ? Buffer.concat([systemAudioRemainder, chunk]) : chunk
+  const sampleCount = Math.floor(bytes.length / 2)
+  let sum = 0
+  for (let offset = 0; offset < sampleCount * 2; offset += 2) {
+    const sample = bytes.readInt16LE(offset) / 32768
+    sum += sample * sample
+  }
+  systemAudioRemainder = bytes.length % 2 === 1 ? bytes.subarray(bytes.length - 1) : Buffer.alloc(0)
+  const now = Date.now()
+  if (now - systemAudioLastLevelAt < 100) return
+  systemAudioLastLevelAt = now
+  const rms = sampleCount > 0 ? Math.sqrt(sum / sampleCount) : 0
+  emit({
+    type: 'system-audio.level',
+    level: systemAudioMuted ? 0 : Math.min(1, Math.max(0, (rms - 0.004) * 8)),
+  })
+}
+
+function startSystemAudioCapture() {
+  if (process.platform !== 'win32') {
+    return { ok: false, error: '系统声音输入目前仅支持 Windows。' }
+  }
+  if (systemAudioProcess) {
+    debugLog('system-audio.start.reused', { pid: systemAudioProcess.pid })
+    return { ok: true, reused: true }
+  }
+  const { command, args, cwd } = systemAudioCommand()
+  if (!existsSync(command)) {
+    debugLog('system-audio.start.rejected', { command, reason: 'helper_not_found' })
+    return { ok: false, error: '系统声音采集组件未安装，请先运行 build:system-audio 或重新安装应用。' }
+  }
+  systemAudioMuted = false
+  systemAudioRemainder = Buffer.alloc(0)
+  systemAudioLastLevelAt = 0
+  let processErrorMessage = ''
+  let processRef
+  try {
+    processRef = spawn(command, [...args, String(process.pid), 'exclude'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+  } catch (error) {
+    debugLog('system-audio.start.error', { command, error: serializeError(error) })
+    return { ok: false, error: `系统声音采集启动失败：${error.message}` }
+  }
+  systemAudioProcess = processRef
+  debugLog('system-audio.process.spawned', { pid: processRef.pid, command, excludedProcessId: process.pid })
+  processRef.stdout.on('data', (chunk) => {
+    if (systemAudioProcess !== processRef || !Buffer.isBuffer(chunk) || chunk.length === 0) return
+    reportSystemAudioLevel(chunk)
+    if (!systemAudioMuted && systemAudioListeningEnabled) {
+      sendSessionCommand({ type: 'audio', data: chunk.toString('base64') })
+    }
+  })
+  processRef.stderr.on('data', (chunk) => {
+    const message = String(chunk).trim()
+    if (!message) return
+    processErrorMessage = message.slice(-4000)
+    debugLog('system-audio.stderr', { pid: processRef.pid, message: message.slice(0, 4000) })
+  })
+  processRef.on('error', (error) => {
+    debugLog('system-audio.process.error', { pid: processRef.pid, error: serializeError(error) })
+    if (systemAudioProcess === processRef) {
+      systemAudioProcess = undefined
+      emit({ type: 'system-audio.error', message: `系统声音采集启动失败：${error.message}` })
+    }
+  })
+  processRef.on('exit', (code, signal) => {
+    debugLog('system-audio.process.exit', { pid: processRef.pid, code, signal })
+    if (systemAudioProcess !== processRef) return
+    systemAudioProcess = undefined
+    emit({ type: 'system-audio.stopped', code, signal })
+    if (code !== 0 && code !== null) {
+      emit({
+        type: 'system-audio.error',
+        message: processErrorMessage || `系统声音采集组件已退出（代码 ${code}）。`,
+      })
+    }
+  })
+  emit({ type: 'system-audio.started', pid: processRef.pid })
+  return { ok: true }
+}
+
+function stopSystemAudioCapture() {
+  const processRef = systemAudioProcess
+  if (!processRef) return false
+  systemAudioProcess = undefined
+  systemAudioMuted = true
+  debugLog('system-audio.process.stop', { pid: processRef.pid })
+  try { processRef.kill() } catch (error) { debugLog('system-audio.process.kill_error', { pid: processRef.pid, error: serializeError(error) }) }
+  emit({ type: 'system-audio.stopped' })
+  return true
+}
+
+function setSystemAudioMuted(muted) {
+  systemAudioMuted = Boolean(muted)
+  debugLog('system-audio.muted', { muted: systemAudioMuted })
+  if (systemAudioMuted) emit({ type: 'system-audio.level', level: 0 })
+  return { ok: true, muted: systemAudioMuted }
+}
+
+function setSystemAudioListeningEnabled(enabled) {
+  systemAudioListeningEnabled = Boolean(enabled)
+  debugLog('system-audio.listening_enabled', { enabled: systemAudioListeningEnabled })
+  return { ok: true, enabled: systemAudioListeningEnabled }
 }
 
 function startHarness(config, harnessModels) {
@@ -1028,6 +1236,7 @@ function startHarness(config, harnessModels) {
       speakingEnabled: Boolean(config?.speakingEnabled),
       drawingEnabled: Boolean(config?.canvasEnabled),
       importedContext: config?.importedContext || null,
+      conversationSummary: config?.conversationSummary || null,
     },
   })
   return { ok: true }
@@ -1185,6 +1394,15 @@ app.whenReady().then(async () => {
     const abilities = normalizeRoleAbilities(roleInput.abilities)
     const screenVisionEnabled = abilities.includes('screenVision')
     const initiativeEnabled = abilities.includes('initiative')
+    const legacyLanguage = normalizeRoleLanguage(roleInput.language, normalizeRoleLanguage(existing?.language))
+    const listeningLanguage = normalizeRoleLanguage(
+      roleInput.listeningLanguage,
+      normalizeRoleLanguage(existing?.listeningLanguage, legacyLanguage),
+    )
+    const outputLanguage = normalizeRoleLanguage(
+      roleInput.outputLanguage,
+      normalizeRoleLanguage(existing?.outputLanguage, legacyLanguage),
+    )
     const nextRole = {
       id,
       name,
@@ -1194,7 +1412,8 @@ app.whenReady().then(async () => {
       behavior: normalizeRoleText(roleInput.behavior),
       workflow: normalizeRoleText(roleInput.workflow),
       constraints: normalizeRoleText(roleInput.constraints),
-      language: ['auto', 'zh-CN', 'en-US'].includes(roleInput.language) ? roleInput.language : 'auto',
+      listeningLanguage,
+      outputLanguage,
       voice: normalizeRoleVoice(roleInput.voice),
       speechStyle: normalizeRoleText(roleInput.speechStyle, 4000),
       avatar: roleInput.avatarRemoved ? '' : (normalizeAvatarData(roleInput.avatar) || normalizeAvatarData(existing?.avatar)),
@@ -1434,6 +1653,13 @@ app.whenReady().then(async () => {
     selectedDisplaySourceId = typeof sourceId === 'string' ? sourceId : ''
     event.returnValue = true
   })
+  ipcMain.handle('system-audio:start', () => startSystemAudioCapture())
+  ipcMain.handle('system-audio:stop', () => {
+    stopSystemAudioCapture()
+    return { ok: true }
+  })
+  ipcMain.on('system-audio:mute', (_event, muted) => setSystemAudioMuted(muted))
+  ipcMain.on('system-audio:listening-enabled', (_event, enabled) => setSystemAudioListeningEnabled(enabled))
   ipcMain.handle('qwen:start', (_event, config) => {
     debugLog('ipc.qwen.start', {
       mode: config?.mode,
@@ -1567,6 +1793,10 @@ app.whenReady().then(async () => {
     })
     return sent ? { ok: true } : { ok: false, error: '实时会话尚未连接。' }
   })
+  ipcMain.on('qwen:context-clear', () => {
+    const sent = sendSessionCommand({ type: 'context.clear' })
+    debugLog('ipc.qwen.context_clear', { sent, runtime: activeRuntime })
+  })
   const normalizeVideoPayload = (payload) => {
     if (typeof payload === 'string') return { data: payload, mode: 'default', requestId: '' }
     return {
@@ -1658,10 +1888,11 @@ app.whenReady().then(async () => {
   await createWindow()
   mainWindow.on('closed', () => {
     debugLog('electron.window.closed')
+    mainWindow = undefined
     stopBridge()
     stopHarness()
+    stopSystemAudioCapture()
     if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy()
-    mainWindow = undefined
   })
 })
 

@@ -8,6 +8,9 @@ import {
   SEE_BBOX_DEBUG_ENABLED,
   DEFAULT_OUTPUT_VOLUME,
   OUTPUT_VOLUME_STORAGE_KEY,
+  DEFAULT_AUDIO_INPUT_MODE,
+  AUDIO_INPUT_MODE_STORAGE_KEY,
+  normalizeAudioInputMode,
   ROLE_ABILITY_IDS,
   DEFAULT_ROLE_ABILITY_IDS,
   NEW_ROLE_DEFAULT_ABILITY_IDS,
@@ -16,7 +19,6 @@ import {
   USAGE_PRESETS,
   USAGE_GRANULARITIES,
   MAX_USAGE_BUCKETS,
-  ROLE_LANGUAGE_OPTIONS,
   ROLE_VOICE_OPTIONS,
   navItems,
   usageDateTimeInputValue,
@@ -47,6 +49,8 @@ import {
   cloneSessionValue,
   sessionRoleSnapshot,
   normalizeImportedSessionArtifact,
+  emptyConversationSummary,
+  normalizeConversationSummary,
   normalizeDrawingStroke,
   sourceCaptureKind,
   normalizeSeeDebugBoxes,
@@ -79,6 +83,13 @@ const [rolePromptPreview, setRolePromptPreview] = useState('')
 const [micDevices, setMicDevices] = useState([])
 const [outputDevices, setOutputDevices] = useState([])
 const [selectedMic, setSelectedMic] = useState('')
+const [audioInputMode, setAudioInputMode] = useState(() => {
+  try {
+    return normalizeAudioInputMode(window.localStorage.getItem(AUDIO_INPUT_MODE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_AUDIO_INPUT_MODE
+  }
+})
 const [selectedOutput, setSelectedOutput] = useState('')
 const [outputVolume, setOutputVolume] = useState(() => {
   try {
@@ -117,6 +128,7 @@ const [transcript, setTranscript] = useState([])
 const [textInput, setTextInput] = useState('')
 const [textSending, setTextSending] = useState(false)
 const [importedContext, setImportedContext] = useState(null)
+const [conversationSummary, setConversationSummary] = useState(emptyConversationSummary)
 const [importLoading, setImportLoading] = useState(false)
 const [notice, setNotice] = useState('')
 const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
@@ -153,6 +165,7 @@ const writingCaptionTimerRef = useRef(null)
 const coreCaptionTimerRef = useRef(null)
 const coreSubtitlesRef = useRef(coreSubtitlesEnabled)
 const connectionRef = useRef(connection)
+const audioInputModeRef = useRef(audioInputMode)
 const lastBridgeErrorRef = useRef('')
 const screenSharingRef = useRef(screenSharing)
 const screenVisionRef = useRef(false)
@@ -200,7 +213,8 @@ function buildSessionArtifact() {
     name: t('roles.default'),
     identity: t('roles.defaultIdentity'),
     corePrinciples: '',
-    language: 'auto',
+    listeningLanguage: 'auto',
+    outputLanguage: 'auto',
     voice: '',
     abilities: DEFAULT_ROLE_ABILITY_IDS,
   }
@@ -243,6 +257,7 @@ function buildSessionArtifact() {
       captureKind: screenSharing ? screenCaptureKind : 'none',
     },
     messages,
+    conversationSummary: normalizeConversationSummary(conversationSummary),
     // Only structured capability metadata is exported. No screenshots,
     // audio, video, data URLs, or other media payloads are stored here.
     capabilityCalls: sessionEventsRef.current.map((event) => cloneSessionValue(event, 12000)).slice(-MAX_SESSION_EVENTS),
@@ -272,6 +287,7 @@ async function importSessionContext() {
       return
     }
     const artifact = normalizeImportedSessionArtifact(result.artifact)
+    setConversationSummary(normalizeConversationSummary(artifact.conversationSummary))
     setImportedContext({
       fileName: result.fileName || 'session.json',
       artifact,
@@ -281,6 +297,7 @@ async function importSessionContext() {
       fileName: result.fileName || 'session.json',
       messageCount: artifact.messages.length,
       capabilityEventCount: artifact.capabilityCalls.length,
+      conversationSummary: Boolean(artifact.conversationSummary?.topic || artifact.conversationSummary?.lastIntent),
     })
     setNotice(t('notices.sessionContextImported', { count: artifact.messages.length }))
   } catch (error) {
@@ -291,9 +308,10 @@ async function importSessionContext() {
 }
 
 const deviceLabel = useMemo(() => {
+  if (audioInputMode === 'system') return t('microphone.systemSound')
   const active = micDevices.find((device) => device.deviceId === selectedMic)
   return active?.label || t('microphone.default')
-}, [micDevices, selectedMic, t])
+}, [audioInputMode, micDevices, selectedMic, t])
 
 const loadDevices = useCallback(async () => {
   if (!navigator.mediaDevices?.enumerateDevices) return
@@ -316,11 +334,11 @@ useEffect(() => {
   })
   navigator.mediaDevices?.addEventListener?.('devicechange', loadDevices)
   loadDevices().catch(() => {}).finally(() => {
-    if (!navigator.mediaDevices?.getUserMedia) return
-    startMicrophone().catch((error) => {
+    startAudioInput().catch((error) => {
       stopMicrophone()
+      void window.cosight?.stopSystemAudioCapture?.()
       if (!['NotAllowedError', 'PermissionDeniedError'].includes(error.name)) {
-        setNotice(t('notices.microphoneListenFailed', { message: error.message }))
+        setNotice(t('notices.audioInputStartFailed', { message: error.message }))
       }
     })
   })
@@ -343,12 +361,14 @@ useEffect(() => {
 useEffect(() => {
   screenVisionRef.current = screenVisionEnabled
   listeningRef.current = listeningEnabled
+  audioInputModeRef.current = audioInputMode
+  window.cosight?.setSystemAudioListeningEnabled?.(listeningEnabled)
   speakingRef.current = speakingEnabled
   allowInterruptionsRef.current = allowInterruptions
   transparentCanvasRef.current = useTransparentCanvas
   writingRef.current = useWritingAbility
   coreSubtitlesRef.current = coreSubtitlesEnabled
-}, [screenVisionEnabled, listeningEnabled, speakingEnabled, allowInterruptions, useTransparentCanvas, useWritingAbility, coreSubtitlesEnabled])
+}, [screenVisionEnabled, listeningEnabled, audioInputMode, speakingEnabled, allowInterruptions, useTransparentCanvas, useWritingAbility, coreSubtitlesEnabled])
 
 useEffect(() => {
   if (!connection.includes('Connected')) return undefined
@@ -402,6 +422,14 @@ useEffect(() => {
   gain.gain.cancelScheduledValues(now)
   gain.gain.setTargetAtTime(normalizedVolume / 100, now, 0.015)
 }, [outputVolume])
+
+useEffect(() => {
+  try {
+    window.localStorage.setItem(AUDIO_INPUT_MODE_STORAGE_KEY, audioInputMode)
+  } catch {
+    // Local persistence is optional in the desktop shell.
+  }
+}, [audioInputMode])
 
 useEffect(() => {
   const onError = (event) => {
@@ -659,6 +687,43 @@ function scheduleAssistantTurnFlush() {
 
 function handleQwenEvent(event) {
   if (!event) return
+  if (event.type === 'conversation.summary.updated') {
+    const summary = normalizeConversationSummary(event.summary)
+    setConversationSummary(summary)
+    recordSessionEvent('conversation.summary.updated', {
+      coveredRevision: event.coveredRevision,
+      contentChars: JSON.stringify(summary).length,
+    })
+    return
+  }
+  if (event.type === 'conversation.context.cleared') {
+    setConversationSummary(emptyConversationSummary())
+    return
+  }
+  if (event.type === 'system-audio.started') {
+    audioFrameSentRef.current = true
+    setMicActive(true)
+    return
+  }
+  if (event.type === 'system-audio.level') {
+    setMicLevel(audioInputModeRef.current === 'system' ? Math.min(1, Math.max(0, Number(event.level) || 0)) : 0)
+    return
+  }
+  if (event.type === 'system-audio.stopped') {
+    if (audioInputModeRef.current === 'system') {
+      audioFrameSentRef.current = false
+      setMicActive(false)
+      setMicLevel(0)
+    }
+    return
+  }
+  if (event.type === 'system-audio.error') {
+    audioFrameSentRef.current = false
+    setMicActive(false)
+    setMicLevel(0)
+    setNotice(event.message || t('notices.systemAudioFailed'))
+    return
+  }
   if (event.type === 'harness.see.capture.requested') {
     const requestId = event.requestId || ''
     recordSessionEvent('harness.see.capture.requested', {
@@ -828,6 +893,22 @@ function handleQwenEvent(event) {
   }
 }
 
+async function startAudioInput(mode = audioInputMode, deviceId = selectedMic) {
+  const nextMode = normalizeAudioInputMode(mode)
+  if (nextMode === 'system') {
+    stopMicrophone()
+    window.cosight?.setSystemAudioListeningEnabled?.(listeningRef.current)
+    const result = await window.cosight?.startSystemAudioCapture?.()
+    if (!result?.ok) throw new Error(result?.error || t('notices.systemAudioFailed'))
+    audioFrameSentRef.current = true
+    setMicActive(true)
+    setMicLevel(0)
+    return
+  }
+  await window.cosight?.stopSystemAudioCapture?.()
+  await startMicrophone(deviceId)
+}
+
 async function startMicrophone(deviceId = selectedMic) {
   if (micStreamRef.current) return
   audioFrameSentRef.current = false
@@ -890,15 +971,40 @@ async function startMicrophone(deviceId = selectedMic) {
 
 function toggleMicrophoneMute() {
   const nextMuted = !micMuted
+  if (audioInputModeRef.current === 'system') {
+    window.cosight?.setSystemAudioMuted?.(nextMuted)
+    setMicMuted(nextMuted)
+    if (nextMuted) setMicLevel(0)
+    return
+  }
   micStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !nextMuted })
   setMicMuted(nextMuted)
   if (nextMuted) setMicLevel(0)
 }
 
+async function selectAudioInputMode(mode) {
+  const nextMode = normalizeAudioInputMode(mode)
+  audioInputModeRef.current = nextMode
+  setAudioInputMode(nextMode)
+  setMicMuted(false)
+  stopMicrophone()
+  await window.cosight?.stopSystemAudioCapture?.()
+  try {
+    await startAudioInput(nextMode)
+  } catch (error) {
+    setMicActive(false)
+    setMicLevel(0)
+    setNotice(t('notices.audioInputStartFailed', { message: error.message }))
+  }
+}
+
 async function selectMicrophone(deviceId) {
+  audioInputModeRef.current = 'microphone'
+  setAudioInputMode('microphone')
   setSelectedMic(deviceId)
   stopMicrophone()
   try {
+    await window.cosight?.stopSystemAudioCapture?.()
     await startMicrophone(deviceId)
   } catch (error) {
     stopMicrophone()
@@ -1610,6 +1716,7 @@ useEffect(() => {
 function stopAllCapture() {
   stopScreenShare()
   stopMicrophone()
+  void window.cosight?.stopSystemAudioCapture?.()
   window.clearInterval(elapsedTimerRef.current)
 }
 
@@ -1643,12 +1750,20 @@ async function startChat() {
       ? {
           messages: importedContext.artifact.messages,
           capabilityCalls: importedContext.artifact.capabilityCalls,
+          conversationSummary: normalizeConversationSummary(importedContext.artifact.conversationSummary),
         }
       : null
+    const startingConversationSummary = contextToInject
+      ? contextToInject.conversationSummary
+      : normalizeConversationSummary(conversationSummary)
     currentSessionIdRef.current = makeSessionId()
     connectionRef.current = 'Connecting'
     audioFrameSentRef.current = false
-    if (!micStreamRef.current) await startMicrophone()
+    if (audioInputModeRef.current === 'system') {
+      await startAudioInput('system')
+    } else if (!micStreamRef.current) {
+      await startMicrophone()
+    }
     const effectiveInitiative = initiativeActive
     const overlayEnabledForSession = screenSharing && screenCaptureKind === 'screen'
     const result = await window.cosight?.startSession?.({
@@ -1667,6 +1782,7 @@ async function startChat() {
       subtitlesEnabled: coreSubtitlesEnabled && overlayEnabledForSession,
       initiativeEnabled: effectiveInitiative,
       importedContext: contextToInject,
+      conversationSummary: startingConversationSummary,
     })
     if (!result?.ok) {
       setNotice(result?.error || t('notices.bridgeStartFailed'))
@@ -1682,12 +1798,29 @@ async function startChat() {
   }
 }
 
+function clearConversationContext() {
+  if (assistantTurnFlushTimerRef.current) {
+    window.clearTimeout(assistantTurnFlushTimerRef.current)
+    assistantTurnFlushTimerRef.current = null
+  }
+  assistantDraftRef.current = ''
+  assistantTurnTextRef.current = ''
+  assistantToolResponseRef.current = false
+  setAssistantDraft('')
+  setTranscript([])
+  setConversationSummary(emptyConversationSummary())
+  setImportedContext(null)
+  window.cosight?.clearConversationContext?.()
+  recordSessionEvent('conversation.context.cleared')
+}
+
 async function stopChat() {
   flushAssistantTurn()
   await window.cosight?.stopSession?.()
   connectionRef.current = 'Disconnected'
   audioFrameSentRef.current = false
   stopMicrophone()
+  void window.cosight?.stopSystemAudioCapture?.()
   window.clearInterval(elapsedTimerRef.current)
   lastBridgeErrorRef.current = ''
   assistantDraftRef.current = ''
@@ -1850,7 +1983,8 @@ function openNewRole(returnNav = 'roles') {
 function openEditRole(role) {
   if (!role || role.isBuiltin || isChatActive) return
   const abilities = [...(role.abilities || [])]
-  setRoleDraft({ ...emptyRoleDraft(), ...role, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || '5') : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || '8') : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])] })
+  const legacyLanguage = role.language || 'auto'
+  setRoleDraft({ ...emptyRoleDraft(), ...role, listeningLanguage: role.listeningLanguage || legacyLanguage, outputLanguage: role.outputLanguage || legacyLanguage, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || '5') : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || '8') : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])] })
   setRoleEditorReturnNav('roles')
   setRoleEditorOpen(true)
   setActiveNav('roles')
@@ -1894,6 +2028,7 @@ async function saveRole() {
     const next = current.filter((role) => role.id !== result.role.id)
     return [result.role, ...next]
   })
+  if (selectedRoleId !== result.role.id) setConversationSummary(emptyConversationSummary())
   const selection = await window.cosight?.selectRole?.(result.role.id)
   setSelectedRoleId(selection?.selectedRoleId || result.role.id)
   setRoleEditorOpen(false)
@@ -1903,6 +2038,7 @@ async function saveRole() {
 
 async function selectRole(roleId) {
   if (isChatActive) return
+  if (selectedRoleId !== roleId) setConversationSummary(emptyConversationSummary())
   setSelectedRoleId(roleId)
   const result = await window.cosight?.selectRole?.(roleId)
   if (result && !result.ok) setNotice(result.error || t('notices.roleSelectFailed'))
@@ -1916,6 +2052,7 @@ async function deleteRole(role) {
     return
   }
   setRoles((current) => current.filter((item) => item.id !== role.id))
+  if (selectedRoleId === role.id) setConversationSummary(emptyConversationSummary())
   setSelectedRoleId(result.selectedRoleId || '')
   setNotice(t('notices.roleDeleted'))
 }
@@ -2036,13 +2173,14 @@ useEffect(() => {
     roles, setRoles, selectedRoleId, setSelectedRoleId, roleEditorOpen, setRoleEditorOpen,
     roleDraft, setRoleDraft, rolePromptPreviewOpen, setRolePromptPreviewOpen,
     rolePromptPreviewLoading, rolePromptPreview, setRolePromptPreview, setRolePromptPreviewOpen,
-    micDevices, outputDevices, selectedMic, setSelectedMic, selectedOutput, setSelectedOutput,
+    micDevices, outputDevices, selectedMic, setSelectedMic, audioInputMode, selectedOutput, setSelectedOutput,
     outputVolume, setOutputVolume, connection, setConnection, screenSharing, screenLoading,
     autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk,
     allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript,
     coreSubtitlesEnabled, setCoreSubtitlesEnabled,
     screenVideoRef, micActive, micMuted, micLevel, elapsed, transcript, setTranscript,
     textInput, setTextInput, textSending, importedContext, setImportedContext, importLoading,
+    conversationSummary, setConversationSummary,
     notice, setNotice, sourcePickerOpen, setSourcePickerOpen, sources, sourcesLoading,
     assistantDraft, isStarting, selectedModel, selectedRole, screenVisionEnabled,
     listeningEnabled, speakingEnabled, useTransparentCanvas, useWritingAbility,
@@ -2050,11 +2188,11 @@ useEffect(() => {
     isConnected, isChatActive, captureLockedDuringConnection, connectionLabel,
     startChatBlockedReason,
     exportSessionArtifact, importSessionContext, openSourcePicker, shareSource,
-    stopScreenShare, toggleMicrophoneMute, startChat, stopChat, submitTextMessage,
+    stopScreenShare, toggleMicrophoneMute, startChat, stopChat, clearConversationContext, submitTextMessage,
     openNewModel, openEditModel, saveModel, changeModelMode, openHarnessModelEditor,
     closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel,
     selectModel, deleteSelectedModel, openNewRole, openEditRole, closeRoleEditor,
-    previewRolePrompt, saveRole, selectRole, deleteRole, changeOutput, selectMicrophone,
+    previewRolePrompt, saveRole, selectRole, deleteRole, changeOutput, selectMicrophone, selectAudioInputMode,
     toggleNav,
   }
 }

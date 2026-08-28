@@ -21,18 +21,20 @@ type mockChatCall struct {
 }
 
 type mockChatServer struct {
-	server      *httptest.Server
-	seeCalls    chan mockChatCall
-	brainCalls  chan mockChatCall
-	includeDraw bool
+	server       *httptest.Server
+	seeCalls     chan mockChatCall
+	brainCalls   chan mockChatCall
+	summaryCalls chan mockChatCall
+	includeDraw  bool
 }
 
 func newMockChatServer(t *testing.T, includeDraw bool) *mockChatServer {
 	t.Helper()
 	mock := &mockChatServer{
-		seeCalls:    make(chan mockChatCall, 4),
-		brainCalls:  make(chan mockChatCall, 4),
-		includeDraw: includeDraw,
+		seeCalls:     make(chan mockChatCall, 4),
+		brainCalls:   make(chan mockChatCall, 4),
+		summaryCalls: make(chan mockChatCall, 4),
+		includeDraw:  includeDraw,
 	}
 	mock.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/chat/completions" {
@@ -66,14 +68,19 @@ func newMockChatServer(t *testing.T, includeDraw bool) *mockChatServer {
 		}
 		var content string
 		if model == "mock-see" {
-			content = `{"scene":"一个桌面应用窗口","summary":"右上角有一个按钮","objects":[{"objectId":"obj_button","label":"按钮","bbox_2d":[100,200,400,500],"confidence":0.95}],"textBlocks":[]}`
+			content = `{"scene":"一个桌面应用窗口","vision_summary":"右上角有一个按钮","objects":[{"objectId":"obj_button","label":"按钮","bbox_2d":[100,200,400,500],"confidence":0.95}],"textBlocks":[]}`
 			mock.seeCalls <- call
-		} else {
-			content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"我看到了这个按钮。"}]}`
-			if mock.includeDraw {
-				content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"好的，我来标记这个按钮。"},{"actionId":"draw_mock","type":"draw","operation":"circle","target":{"bbox":{"x":0.1,"y":0.2,"width":0.3,"height":0.3}}}]}`
+		} else if len(messages) > 0 {
+			if systemMessage, ok := messages[0].(map[string]any); ok && strings.Contains(stringValueForTest(systemMessage["content"]), "摘要器") {
+				content = `{"topic":"mock conversation","facts":["用户完成了 Harness 测试"],"decisions":[],"pendingTasks":[],"lastIntent":"继续验证"}`
+				mock.summaryCalls <- call
+			} else {
+				content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"我看到了这个按钮。"}]}`
+				if mock.includeDraw {
+					content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"好的，我来标记这个按钮。"},{"actionId":"draw_mock","type":"draw","operation":"circle","target":{"bbox":{"x":0.1,"y":0.2,"width":0.3,"height":0.3}}}]}`
+				}
+				mock.brainCalls <- call
 			}
-			mock.brainCalls <- call
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -88,6 +95,11 @@ func newMockChatServer(t *testing.T, includeDraw bool) *mockChatServer {
 		})
 	}))
 	return mock
+}
+
+func stringValueForTest(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func (mock *mockChatServer) close() {
@@ -171,8 +183,9 @@ func mockStartConfig(chatURL, realtimeURL string, initiative, drawing, vision bo
 			"see":    {Name: "mock-see", URL: chatURL, APIKey: "mock-key"},
 		},
 		Role: map[string]any{
-			"name":     "Mock role",
-			"language": "zh-CN",
+			"name":              "Mock role",
+			"listeningLanguage": "zh-CN",
+			"outputLanguage":    "zh-CN",
 		},
 		SeeMinIntervalMS:        1000,
 		SeeChangeThreshold:      8,
@@ -306,4 +319,43 @@ func TestHarnessMockInitiativeFlowDoesNotCreateUserMessage(t *testing.T) {
 		items := historySnapshot(h)
 		return len(items) == 1 && items[0].Role == "assistant"
 	})
+}
+
+func TestHarnessMockConversationSummaryRunsSeparatelyAndInstallsResult(t *testing.T) {
+	chat := newMockChatServer(t, false)
+	defer chat.close()
+
+	h := newHarness()
+	config := mockStartConfig(chat.server.URL, "ws://127.0.0.1:1", false, false, false)
+	config.ListeningEnabled = false
+	config.SpeakingEnabled = false
+	if err := h.start(config); err != nil {
+		t.Fatalf("Harness failed to start for summary test: %v", err)
+	}
+	defer h.stop()
+
+	for index := 0; index < conversationSummaryTriggerMessages; index++ {
+		h.appendHistory("user", "message "+string(rune('A'+index)))
+	}
+	h.maybeStartConversationSummary()
+	select {
+	case call := <-chat.summaryCalls:
+		if !call.HasMaxTokens {
+			t.Fatal("conversation summary request should use its bounded max_tokens")
+		}
+		if got, ok := call.Body["max_tokens"].(float64); !ok || int(got) != conversationSummaryMaxTokens {
+			t.Fatalf("unexpected summary max_tokens: %#v", call.Body["max_tokens"])
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for independent summary request")
+	}
+	waitForCondition(t, "conversation summary installation", func() bool {
+		return h.currentConversationSummary().Topic == "mock conversation"
+	})
+	h.mu.Lock()
+	summaryInFlight := h.summaryInFlight
+	h.mu.Unlock()
+	if summaryInFlight {
+		t.Fatal("summary request should not remain in flight after completion")
+	}
 }

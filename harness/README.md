@@ -15,14 +15,21 @@ The Harness owns four model adapters:
 Draw is not a model. Brain emits semantic draw actions and the renderer maps
 them to the existing transparent overlay implementation.
 
-The default visual result TTL is five seconds. Electron passes the configured
-value as `seeMinIntervalMs` in the start command. After a successful See
-response, the Harness keeps that exact JPEG in memory as the visual baseline. Ordinary
-screen frames are compared locally against the baseline using a 64x36 luma
-sample grid; only a significant change starts a background See refresh. The
-same setting also drives the quiet-screen periodic refresh and guarantees a
-minimum gap between model calls. Its default is five seconds. Brain never
-waits for that refresh.
+Electron passes the configured visual refresh interval as `seeMinIntervalMs`
+in the start command. After a successful See response, the Harness keeps that
+exact JPEG in memory as the visual baseline. Ordinary screen frames are
+compared locally against the baseline using a 64x36 luma sample grid; only a
+significant change starts a background See refresh. The same setting also
+drives the quiet-screen periodic refresh and guarantees a minimum gap between
+model calls. There is no independent visual-result TTL: Brain always reads the
+latest successful visual context available and never waits for See.
+
+The Harness also keeps a compact role-scoped `conversationSummary`. After
+eight new stored turns, a separate Brain request updates it asynchronously;
+the normal Brain queue is not blocked. The Renderer carries the summary into a
+new Chat for the same role, exports/imports it with the Session Artifact, and
+clears it when the transcript is cleared or the role changes. Summary failures
+are logged and do not prevent normal conversation requests.
 
 ## Diagnostics
 
@@ -34,6 +41,16 @@ ID where applicable, for example `see.request.created`,
 `speak.completed`. Frame diagnostics contain only dimensions, byte counts,
 comparison metrics, state flags, and request IDs; they do not contain the
 image data or API keys.
+
+Every diagnostic entry has a `level`: normal runtime events are `INFO`, failures
+are `ERROR`, and detailed diagnostics are `DEBUG`. `performance.latency.summary`
+is emitted periodically and when the session stops. It contains `brain`, `see`,
+and `speak` aggregates with `sampleCount`, `averageMs`, `maxMs`, `p50Ms`, and
+`p95Ms`; the measured stage is the model or realtime request, not the complete
+turn orchestration. `conversation.content` is also `DEBUG` and records the
+exact user/assistant text, source, session, and request identifiers needed for
+later evaluation. It does not record raw audio, video frames, API keys, or full
+prompts.
 
 See prompts follow the Qwen-VL grounding convention: the model is asked to
 return `bbox_2d` as `[x_min, y_min, x_max, y_max]` on a 0-1000 normalized grid.
@@ -51,7 +68,7 @@ the capture timestamp, and Brain always uses the latest successful result.
 ```
 
 ```json
-{"schema":"cosight.harness.signal","version":1,"type":"see.completed","eventId":"evt_see_01","sessionId":"session_01","createdAt":"2026-08-27T10:00:01.4Z","source":{"module":"see","model":"qwen3-vl-flash"},"payload":{"frameId":"frame_01","capturedAt":"2026-08-27T10:00:01.2Z","coordinateSpace":"full_screen","frame":{"format":"jpeg"},"scene":"一个深色主题的模型配置页面，中央显示多模型 Harness 配置卡片。","objects":[{"objectId":"obj_01","label":"按钮","bbox":{"x":0.78,"y":0.08,"width":0.12,"height":0.05},"confidence":0.94}],"textBlocks":[],"summary":"右上角有一个按钮"}}
+{"schema":"cosight.harness.signal","version":1,"type":"see.completed","eventId":"evt_see_01","sessionId":"session_01","createdAt":"2026-08-27T10:00:01.4Z","source":{"module":"see","model":"qwen3-vl-flash"},"payload":{"frameId":"frame_01","capturedAt":"2026-08-27T10:00:01.2Z","coordinateSpace":"full_screen","frame":{"format":"jpeg"},"scene":"一个深色主题的模型配置页面，中央显示多模型 Harness 配置卡片。","objects":[{"objectId":"obj_01","label":"按钮","bbox":{"x":0.78,"y":0.08,"width":0.12,"height":0.05},"confidence":0.94}],"textBlocks":[],"vision_summary":"右上角有一个按钮"}}
 ```
 
 Brain must always include at least one `speak` action. Draw actions are

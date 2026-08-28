@@ -109,6 +109,7 @@ func (h *harness) handleCompletedListen(listen signal, payload listenPayload, in
 		"configuredRecentVisionCount": h.cfg.RecentVisionCount,
 		"waitMs":                      0,
 	})
+	conversationSummary := h.currentConversationSummary()
 	recentTurns := h.recentHistory(h.cfg.RecentConversationCount)
 	// The current utterance is included separately below. Avoid sending it
 	// twice just because the transcript was recorded before Brain woke up.
@@ -120,15 +121,16 @@ func (h *harness) handleCompletedListen(listen signal, payload listenPayload, in
 	}
 
 	userInput := map[string]any{
-		"recentTurns":        recentTurns,
-		"latestVision":       visual,
-		"recentVision":       recentVision,
-		"recentVisionCount":  len(recentVision),
-		"latestVisionStatus": visionStatus,
-		"latestVisionAgeMs":  visionAgeMS,
-		"currentUserText":    payload.Text,
-		"trigger":            trigger,
-		"sessionId":          h.cfg.SessionID,
+		"conversationSummary": conversationSummary,
+		"recentTurns":         recentTurns,
+		"latestVision":        visual,
+		"recentVision":        recentVision,
+		"recentVisionCount":   len(recentVision),
+		"latestVisionStatus":  visionStatus,
+		"latestVisionAgeMs":   visionAgeMS,
+		"currentUserText":     payload.Text,
+		"trigger":             trigger,
+		"sessionId":           h.cfg.SessionID,
 	}
 	if initiativePrompt != "" {
 		userInput["initiativePrompt"] = initiativePrompt
@@ -152,17 +154,20 @@ func (h *harness) handleCompletedListen(listen signal, payload listenPayload, in
 		"seeEventId":                        seeEventID,
 		"maxTokens":                         brainMaxTokens,
 		"initiativePromptBytes":             len(initiativePrompt),
+		"conversationSummaryChars":          summaryContentLength(conversationSummary),
 	})
 	content, err := h.callJSONModel(h.cfg.Models["brain"], "brain", brainRequestID, buildRoleSystemPrompt(h.cfg.Role), string(encoded), &brainMaxTokens)
+	brainDurationMS := durationMS(brainStartedAt)
 	if err != nil {
 		status = "brain_failed"
 		emitLog("brain.model.failed", map[string]any{
 			"requestId":  brainRequestID,
 			"trigger":    trigger,
 			"model":      h.cfg.Models["brain"].Name,
-			"durationMs": durationMS(brainStartedAt),
+			"durationMs": brainDurationMS,
 			"error":      err.Error(),
 		})
+		h.recordLatency("brain", brainDurationMS)
 		h.logActionFailure("brain", "", "BRAIN_FAILED", err.Error())
 		emitBridgeError(fmt.Sprintf("Brain 请求失败：%v", err))
 		return
@@ -170,9 +175,10 @@ func (h *harness) handleCompletedListen(listen signal, payload listenPayload, in
 	emitLog("brain.model.completed", map[string]any{
 		"requestId":    brainRequestID,
 		"model":        h.cfg.Models["brain"].Name,
-		"durationMs":   durationMS(brainStartedAt),
+		"durationMs":   brainDurationMS,
 		"contentBytes": len(content),
 	})
+	h.recordLatency("brain", brainDurationMS)
 	parseStartedAt := time.Now()
 	action, err := parseBrainAction(content, h.cfg.SessionID, listenEventID, seeEventID)
 	if err != nil {
@@ -272,6 +278,13 @@ func (h *harness) executeAction(action brainAction) {
 			h.logActionFailure("speak", action.ActionID, "SPEAK_TEXT_EMPTY", "speak.text 不能为空")
 			return
 		}
+		emitDebugLog("conversation.content", map[string]any{
+			"sessionId": h.cfg.SessionID,
+			"role":      "assistant",
+			"source":    "brain.speak",
+			"actionId":  action.ActionID,
+			"text":      text,
+		})
 		if !h.cfg.SpeakingEnabled {
 			emitLog("speak.skipped", map[string]any{
 				"actionId":  action.ActionID,
@@ -282,6 +295,7 @@ func (h *harness) executeAction(action brainAction) {
 			// output is disabled, but never open a TTS connection.
 			emit(map[string]any{"type": "assistant.text.delta", "text": text})
 			h.appendHistory("assistant", text)
+			h.maybeStartConversationSummary()
 			emit(map[string]any{"type": "assistant.text.done", "text": text})
 			return
 		}
@@ -293,20 +307,25 @@ func (h *harness) executeAction(action brainAction) {
 		})
 		emit(map[string]any{"type": "assistant.text.delta", "text": text})
 		if err := h.speak(text); err != nil {
+			speakDurationMS := durationMS(speakStartedAt)
 			emitLog("speak.failed", map[string]any{
 				"actionId":   action.ActionID,
-				"durationMs": durationMS(speakStartedAt),
+				"durationMs": speakDurationMS,
 				"error":      err.Error(),
 			})
+			h.recordLatency("speak", speakDurationMS)
 			h.logActionFailure("speak", action.ActionID, "SPEAK_FAILED", err.Error())
 			return
 		}
+		speakDurationMS := durationMS(speakStartedAt)
 		emitLog("speak.completed", map[string]any{
 			"actionId":   action.ActionID,
-			"durationMs": durationMS(speakStartedAt),
+			"durationMs": speakDurationMS,
 			"textBytes":  len(text),
 		})
+		h.recordLatency("speak", speakDurationMS)
 		h.appendHistory("assistant", text)
+		h.maybeStartConversationSummary()
 		emit(map[string]any{"type": "assistant.text.done", "text": text})
 	case "draw":
 		if !h.cfg.DrawingEnabled {
@@ -504,7 +523,7 @@ func (h *harness) logActionFailure(actionType, actionID, code string, detail any
 		},
 		"retry": false,
 	}
-	appendDebugLog("harness.action.failed", map[string]any{
+	appendErrorLog("harness.action.failed", map[string]any{
 		"sessionId":  h.cfg.SessionID,
 		"actionId":   actionID,
 		"actionType": actionType,

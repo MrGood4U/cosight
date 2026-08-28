@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,17 @@ import (
 )
 
 func (h *harness) callJSONModel(profile modelProfile, stage, requestID, systemPrompt string, content any, maxTokens *int) (string, error) {
+	h.mu.Lock()
+	ctx := h.ctx
+	sessionID := h.cfg.SessionID
+	h.mu.Unlock()
+	return h.callJSONModelContext(ctx, sessionID, profile, stage, requestID, systemPrompt, content, maxTokens)
+}
+
+func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, profile modelProfile, stage, requestID, systemPrompt string, content any, maxTokens *int) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	endpoint, err := chatCompletionsURL(profile.URL, defaultBrainURL)
 	if err != nil {
 		emitLog(stage+".model.endpoint.failed", map[string]any{
@@ -48,7 +60,7 @@ func (h *harness) callJSONModel(profile modelProfile, stage, requestID, systemPr
 		inputContentBytes = len(encodedContent)
 	}
 	startedAt := time.Now()
-	request, err := http.NewRequestWithContext(h.ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		emitLog(stage+".model.request.failed", map[string]any{
 			"requestId": requestID,
@@ -161,7 +173,7 @@ func (h *harness) callJSONModel(profile modelProfile, stage, requestID, systemPr
 		if usage := normalizeModelUsage(envelope.Usage); usage != nil {
 			responseLog["usage"] = usage
 			usageFields := map[string]any{
-				"sessionId": h.cfg.SessionID,
+				"sessionId": sessionID,
 				"requestId": requestID,
 				"module":    stage,
 				"model":     profile.Name,

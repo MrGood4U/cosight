@@ -17,6 +17,12 @@ var (
 	debugMu  sync.Mutex
 )
 
+const (
+	logLevelDebug = "DEBUG"
+	logLevelInfo  = "INFO"
+	logLevelError = "ERROR"
+)
+
 func newID(prefix string) string {
 	var value [8]byte
 	if _, err := rand.Read(value[:]); err == nil {
@@ -38,17 +44,30 @@ func emit(payload any) {
 }
 
 func emitBridgeError(message string) {
-	appendDebugLog("bridge.error", map[string]any{"message": message})
-	emit(map[string]any{"type": "bridge.error", "message": message})
+	appendLog(logLevelError, "bridge.error", map[string]any{"message": message})
+	emit(map[string]any{"type": "bridge.error", "level": logLevelError, "message": message})
 }
 
 func appendDebugLog(kind string, fields map[string]any) {
+	appendLog(logLevelDebug, kind, fields)
+}
+
+func appendInfoLog(kind string, fields map[string]any) {
+	appendLog(logLevelInfo, kind, fields)
+}
+
+func appendErrorLog(kind string, fields map[string]any) {
+	appendLog(logLevelError, kind, fields)
+}
+
+func appendLog(level, kind string, fields map[string]any) {
 	logPath := strings.TrimSpace(os.Getenv("COSIGHT_DEBUG_LOG"))
 	if logPath == "" {
 		return
 	}
 	entry := map[string]any{
 		"time":    nowString(),
+		"level":   level,
 		"kind":    kind,
 		"payload": fields,
 	}
@@ -78,16 +97,39 @@ func durationMS(start time.Time) int64 {
 }
 
 func emitLog(message string, fields map[string]any) {
-	payload := map[string]any{"type": "harness.log", "message": message}
+	level := logLevelForMessage(message)
+	payload := map[string]any{"type": "harness.log", "level": level, "message": message}
 	for key, value := range fields {
 		payload[key] = value
 	}
-	appendDebugLog("harness."+message, fields)
+	appendLog(level, "harness."+message, fields)
 	emit(payload)
 }
 
+// emitDebugLog records detailed diagnostics without treating them as a normal
+// runtime event. It is also forwarded through stdout so Electron can put the
+// same structured entry in its own log.
+func emitDebugLog(message string, fields map[string]any) {
+	payload := map[string]any{"type": "harness.log", "level": logLevelDebug, "message": message}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	appendLog(logLevelDebug, "harness."+message, fields)
+	emit(payload)
+}
+
+func logLevelForMessage(message string) string {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	for _, marker := range []string{".error", ".failed", ".rejected", "_error", "_failed", "_rejected", "失败", "错误"} {
+		if strings.Contains(lower, marker) {
+			return logLevelError
+		}
+	}
+	return logLevelInfo
+}
+
 func emitSignal(s signal) {
-	appendDebugLog("harness.signal", map[string]any{
+	appendInfoLog("harness.signal", map[string]any{
 		"type":        s.Type,
 		"eventId":     s.EventID,
 		"sessionId":   s.SessionID,

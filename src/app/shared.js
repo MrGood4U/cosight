@@ -22,6 +22,14 @@ export const DEFAULT_HARNESS_SETTINGS = {
 export const SEE_BBOX_DEBUG_ENABLED = false
 export const DEFAULT_OUTPUT_VOLUME = 48
 export const OUTPUT_VOLUME_STORAGE_KEY = 'cosight.outputVolume'
+export const AUDIO_INPUT_MODES = ['microphone', 'system']
+export const DEFAULT_AUDIO_INPUT_MODE = 'microphone'
+export const AUDIO_INPUT_MODE_STORAGE_KEY = 'cosight.audioInputMode'
+
+export function normalizeAudioInputMode(value) {
+  return AUDIO_INPUT_MODES.includes(value) ? value : DEFAULT_AUDIO_INPUT_MODE
+}
+
 export const ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing', 'initiative']
 export const DEFAULT_ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing']
 export const NEW_ROLE_DEFAULT_ABILITY_IDS = ['screenVision', 'listening', 'speaking']
@@ -301,7 +309,8 @@ export function emptyRoleDraft() {
     behavior: '',
     workflow: '',
     constraints: '',
-    language: 'auto',
+    listeningLanguage: 'auto',
+    outputLanguage: 'auto',
     voice: '',
     speechStyle: '',
     avatar: '',
@@ -357,6 +366,55 @@ export const SESSION_ARTIFACT_FORMAT = 'cosight-session'
 export const SESSION_ARTIFACT_VERSION = 1
 export const MAX_SESSION_MESSAGES = 5000
 export const MAX_SESSION_EVENTS = 5000
+export const MAX_CONVERSATION_SUMMARY_CHARS = 800
+
+export function emptyConversationSummary() {
+  return {
+    topic: '',
+    facts: [],
+    decisions: [],
+    pendingTasks: [],
+    lastIntent: '',
+    updatedAt: '',
+  }
+}
+
+function summaryText(value, limit) {
+  return Array.from(String(value || '').trim()).slice(0, limit).join('')
+}
+
+function summaryItems(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => summaryText(item, 100))
+    .filter(Boolean)
+    .slice(0, 5)
+}
+
+function summaryContentLength(summary) {
+  return [summary.topic, summary.lastIntent, ...summary.facts, ...summary.decisions, ...summary.pendingTasks]
+    .reduce((total, value) => total + Array.from(value || '').length, 0)
+}
+
+export function normalizeConversationSummary(value) {
+  const summary = value && typeof value === 'object' ? {
+    topic: summaryText(value.topic, 120),
+    facts: summaryItems(value.facts),
+    decisions: summaryItems(value.decisions),
+    pendingTasks: summaryItems(value.pendingTasks),
+    lastIntent: summaryText(value.lastIntent, 160),
+    updatedAt: summaryText(value.updatedAt, 64),
+  } : emptyConversationSummary()
+  while (summaryContentLength(summary) > MAX_CONVERSATION_SUMMARY_CHARS) {
+    if (summary.pendingTasks.length) summary.pendingTasks.pop()
+    else if (summary.facts.length) summary.facts.pop()
+    else if (summary.decisions.length) summary.decisions.pop()
+    else if (summary.lastIntent) summary.lastIntent = summaryText(summary.lastIntent, Math.max(0, Array.from(summary.lastIntent).length - 20))
+    else if (summary.topic) summary.topic = summaryText(summary.topic, Math.max(0, Array.from(summary.topic).length - 20))
+    else break
+  }
+  return summary
+}
 
 export function makeSessionId(prefix = 'session') {
   try {
@@ -377,6 +435,23 @@ export function cloneSessionValue(value, maxLength = 16000) {
   }
 }
 
+function safeSessionPayload(value, depth = 0) {
+  if (depth > 8) return '[truncated]'
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return typeof value === 'string' ? value.slice(0, 20000) : value
+  }
+  if (Array.isArray(value)) return value.slice(0, 500).map((item) => safeSessionPayload(item, depth + 1))
+  if (!value || typeof value !== 'object') return undefined
+  const result = {}
+  for (const [key, item] of Object.entries(value)) {
+    const lowerKey = key.toLowerCase()
+    if (/^(data|image|audio|video|thumbnail|avatar|media|blob)$/i.test(lowerKey) || lowerKey.includes('base64') || lowerKey.includes('filepath') || lowerKey.endsWith('path')) continue
+    const safeValue = safeSessionPayload(item, depth + 1)
+    if (safeValue !== undefined) result[key] = safeValue
+  }
+  return result
+}
+
 export function sessionRoleSnapshot(role) {
   if (!role || typeof role !== 'object') return null
   return {
@@ -388,7 +463,14 @@ export function sessionRoleSnapshot(role) {
     behavior: typeof role.behavior === 'string' ? role.behavior : '',
     workflow: typeof role.workflow === 'string' ? role.workflow : '',
     constraints: typeof role.constraints === 'string' ? role.constraints : '',
-    language: typeof role.language === 'string' ? role.language : 'auto',
+    // Keep exported session artifacts on the current schema while accepting
+    // old roles that only stored `language`.
+    listeningLanguage: typeof role.listeningLanguage === 'string'
+      ? role.listeningLanguage
+      : (typeof role.language === 'string' ? role.language : 'auto'),
+    outputLanguage: typeof role.outputLanguage === 'string'
+      ? role.outputLanguage
+      : (typeof role.language === 'string' ? role.language : 'auto'),
     voice: typeof role.voice === 'string' ? role.voice : '',
     speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '',
     abilities: Array.isArray(role.abilities) ? role.abilities.filter((item) => typeof item === 'string') : [],
@@ -430,7 +512,7 @@ export function normalizeImportedSessionArtifact(value) {
         time: typeof item?.time === 'string' ? item.time : '00:00',
         timestamp: typeof item?.timestamp === 'string' ? item.timestamp : '',
         type: typeof item?.type === 'string' ? item.type : 'ability.event',
-        payload: cloneSessionValue(item?.payload || {}, 12000),
+        payload: cloneSessionValue(safeSessionPayload(item?.payload || {}), 12000),
       }))
     : []
   return {
@@ -457,6 +539,7 @@ export function normalizeImportedSessionArtifact(value) {
       initiative: Boolean(value.capabilities.initiative),
     } : {},
     messages,
+    conversationSummary: normalizeConversationSummary(value.conversationSummary),
     capabilityCalls,
   }
 }

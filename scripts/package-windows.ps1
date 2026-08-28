@@ -78,23 +78,27 @@ if (-not (Test-Path -LiteralPath $buildPython)) {
   throw "Failed to create the Python packaging environment: $buildPython"
 }
 
-Write-Host '[1/6] Installing build dependencies...' -ForegroundColor Cyan
+Write-Host '[1/8] Installing build dependencies...' -ForegroundColor Cyan
 Invoke-Checked $buildPython @('-m', 'pip', 'install', '--upgrade', 'pip')
 Invoke-Checked $buildPython @('-m', 'pip', 'install', '--requirement', (Join-Path $projectRoot 'requirements-packaging.txt'))
 
 if (-not $SkipNpmCi) {
-  Write-Host '[2/6] Installing Node dependencies...' -ForegroundColor Cyan
+  Write-Host '[2/8] Installing Node dependencies...' -ForegroundColor Cyan
   Invoke-Checked $npm @('ci')
 }
 
-Write-Host '[3/7] Building the Go Harness...' -ForegroundColor Cyan
+Write-Host '[3/8] Building the Go Harness...' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'build-harness.ps1')
 if ($LASTEXITCODE -ne 0) { throw "Harness build failed ($LASTEXITCODE)." }
 
-Write-Host '[4/7] Building the renderer...' -ForegroundColor Cyan
+Write-Host '[4/8] Building the Windows Process Loopback helper...' -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot 'build-system-audio.ps1')
+if ($LASTEXITCODE -ne 0) { throw "System audio helper build failed ($LASTEXITCODE)." }
+
+Write-Host '[5/8] Building the renderer...' -ForegroundColor Cyan
 Invoke-Checked $npm @('run', 'build')
 
-Write-Host '[5/7] Bundling the Python realtime bridge...' -ForegroundColor Cyan
+Write-Host '[6/8] Bundling the Python realtime bridge...' -ForegroundColor Cyan
 if (Test-Path -LiteralPath $pythonDist) {
   Remove-Item -LiteralPath $pythonDist -Recurse -Force
 }
@@ -128,8 +132,8 @@ if (-not (Test-Path -LiteralPath $electronBuilder)) {
   throw 'electron-builder was not found. Run npm ci first.'
 }
 
-Write-Host '[6/7] Building the Windows installer...' -ForegroundColor Cyan
+Write-Host '[7/8] Building the Windows installer...' -ForegroundColor Cyan
 Invoke-Checked $electronBuilder @('--win', 'nsis', '--x64', '--publish', 'never')
 
-Write-Host '[7/7] Packaging complete.' -ForegroundColor Green
+Write-Host '[8/8] Packaging complete.' -ForegroundColor Green
 Get-ChildItem -LiteralPath (Join-Path $projectRoot 'release') -Filter '*.exe' | Select-Object FullName, Length

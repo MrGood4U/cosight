@@ -40,7 +40,7 @@ func TestParseBrainActionRequiresSpeak(t *testing.T) {
 }
 
 func TestParseVisionOutputNormalizesBoundingBoxes(t *testing.T) {
-	output, err := parseVisionOutput(`{"summary":"button","objects":[{"objectId":"button-1","label":"button","bbox":{"x":-0.2,"y":0.8,"width":0.8,"height":0.5}}]}`)
+	output, err := parseVisionOutput(`{"vision_summary":"button","objects":[{"objectId":"button-1","label":"button","bbox":{"x":-0.2,"y":0.8,"width":0.8,"height":0.5}}]}`)
 	if err != nil {
 		t.Fatalf("parseVisionOutput failed: %v", err)
 	}
@@ -72,12 +72,15 @@ func TestParseVisionOutputAcceptsQwenOfficialGroundingArray(t *testing.T) {
 }
 
 func TestParseVisionOutputAcceptsQwenBBoxInHarnessEnvelope(t *testing.T) {
-	output, err := parseVisionOutput(`{"scene":"一个深色主题的模型配置页面","summary":"确认按钮","objects":[{"label":"按钮","bbox_2d":[780,80,900,130]}],"textBlocks":[{"text_content":"确认","bbox_2d":[780,80,900,130]}]}`)
+	output, err := parseVisionOutput(`{"scene":"一个深色主题的模型配置页面","vision_summary":"确认按钮","objects":[{"label":"按钮","bbox_2d":[780,80,900,130]}],"textBlocks":[{"text_content":"确认","bbox_2d":[780,80,900,130]}]}`)
 	if err != nil {
 		t.Fatalf("parseVisionOutput failed for Qwen envelope: %v", err)
 	}
 	if output.Scene != "一个深色主题的模型配置页面" {
 		t.Fatalf("expected scene to be preserved, got %q", output.Scene)
+	}
+	if output.VisionSummary != "确认按钮" {
+		t.Fatalf("expected vision_summary to be preserved, got %q", output.VisionSummary)
 	}
 	if len(output.Objects) != 1 || len(output.TextBlocks) != 1 {
 		t.Fatalf("unexpected parsed result: %+v", output)
@@ -92,10 +95,20 @@ func TestParseVisionOutputAcceptsQwenBBoxInHarnessEnvelope(t *testing.T) {
 
 func TestSeePromptRequiresSceneAndCompactVisionOutput(t *testing.T) {
 	prompt := seeSystemPrompt() + seeUserPrompt()
-	for _, required := range []string{"scene", "1 到 2 句", "最多返回 8 个", "objects 和 textBlocks 没有内容时必须返回空数组"} {
+	for _, required := range []string{"scene", "vision_summary", "1 到 2 句", "最多返回 8 个", "objects 和 textBlocks 没有内容时必须返回空数组"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("See prompt is missing %q", required)
 		}
+	}
+}
+
+func TestParseVisionOutputAcceptsLegacySummaryAlias(t *testing.T) {
+	output, err := parseVisionOutput(`{"scene":"桌面","summary":"兼容旧字段","objects":[],"textBlocks":[]}`)
+	if err != nil {
+		t.Fatalf("parseVisionOutput failed for legacy summary alias: %v", err)
+	}
+	if output.VisionSummary != "兼容旧字段" {
+		t.Fatalf("expected legacy summary to map to VisionSummary, got %q", output.VisionSummary)
 	}
 }
 
@@ -108,6 +121,32 @@ func TestBrainPromptExplainsVisionProcessingState(t *testing.T) {
 	}
 }
 
+func TestRoleLanguagesAreIndependent(t *testing.T) {
+	role := map[string]any{
+		"listeningLanguage": "zh-CN",
+		"outputLanguage":    "en-US",
+	}
+	if got := roleListeningLanguage(role); got != "zh-CN" {
+		t.Fatalf("expected listening language zh-CN, got %q", got)
+	}
+	if got := roleOutputLanguage(role); got != "en-US" {
+		t.Fatalf("expected output language en-US, got %q", got)
+	}
+	if prompt := buildRoleSystemPrompt(role); !strings.Contains(prompt, "All speak.text values must be in English.") {
+		t.Fatal("Brain prompt did not use the role output language")
+	}
+}
+
+func TestRoleLanguagesFallbackToLegacyLanguage(t *testing.T) {
+	role := map[string]any{"language": "zh-CN"}
+	if got := roleListeningLanguage(role); got != "zh-CN" {
+		t.Fatalf("expected legacy listening language fallback, got %q", got)
+	}
+	if got := roleOutputLanguage(role); got != "zh-CN" {
+		t.Fatalf("expected legacy output language fallback, got %q", got)
+	}
+}
+
 func TestStartConfigAcceptsInitiativeSetting(t *testing.T) {
 	var config startConfig
 	if err := json.Unmarshal([]byte(`{"initiativeEnabled":true}`), &config); err != nil {
@@ -115,6 +154,49 @@ func TestStartConfigAcceptsInitiativeSetting(t *testing.T) {
 	}
 	if !config.InitiativeEnabled {
 		t.Fatal("expected initiativeEnabled to be forwarded to Harness")
+	}
+}
+
+func TestConversationSummaryIsNormalizedToCompactShape(t *testing.T) {
+	longText := strings.Repeat("摘要内容 ", 200)
+	summary := normalizeConversationSummary(conversationSummary{
+		Topic:        longText,
+		Facts:        []string{longText, "fact-2", "fact-3", "fact-4", "fact-5", "fact-6"},
+		Decisions:    []string{longText},
+		PendingTasks: []string{longText},
+		LastIntent:   longText,
+	})
+	if len(summary.Facts) > 5 || len(summary.Decisions) > 5 || len(summary.PendingTasks) > 5 {
+		t.Fatalf("summary item lists exceeded their cap: %+v", summary)
+	}
+	for _, items := range [][]string{summary.Facts, summary.Decisions, summary.PendingTasks} {
+		for _, item := range items {
+			if len([]rune(item)) > 100 {
+				t.Fatalf("summary item exceeded 100 runes: %d", len([]rune(item)))
+			}
+		}
+	}
+	if summaryContentLength(summary) > maxConversationSummaryChars {
+		t.Fatalf("summary exceeded %d runes: %d", maxConversationSummaryChars, summaryContentLength(summary))
+	}
+}
+
+func TestParseConversationSummaryAcceptsFencedJSON(t *testing.T) {
+	summary, err := parseConversationSummary("```json\n{\"topic\":\"模型配置\",\"facts\":[\"已选择 Brain\"],\"decisions\":[],\"pendingTasks\":[\"继续测试\"],\"lastIntent\":\"检查摘要\"}\n```")
+	if err != nil {
+		t.Fatalf("parseConversationSummary failed: %v", err)
+	}
+	if summary.Topic != "模型配置" || len(summary.Facts) != 1 || len(summary.PendingTasks) != 1 {
+		t.Fatalf("unexpected parsed summary: %+v", summary)
+	}
+}
+
+func TestAppendHistoryAssignsMonotonicRevisions(t *testing.T) {
+	h := newHarness()
+	h.appendHistory("user", "第一句")
+	h.appendHistory("assistant", "第二句")
+	if len(h.history) != 2 || h.history[0].Revision != 1 || h.history[1].Revision != 2 {
+		t.Fatalf("expected monotonic history revisions, got %+v", h.history)
 	}
 }
 

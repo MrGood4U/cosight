@@ -32,6 +32,8 @@ func (h *harness) handleCommand(command inputCommand) {
 		}
 	case "text":
 		h.handleTextInput(command.Data)
+	case "context.clear":
+		h.clearConversationContext()
 	case "initiative":
 		h.handleInitiative(command.Data)
 	case "video", "video.flush", "frame":
@@ -65,7 +67,7 @@ func (h *harness) handleCommand(command inputCommand) {
 
 func runHarnessProcess() {
 	h := newHarness()
-	appendDebugLog("harness.started", map[string]any{"version": protocolVersion})
+	appendInfoLog("harness.started", map[string]any{"version": protocolVersion})
 	emit(map[string]any{"type": "harness.started", "version": protocolVersion})
 	decoder := json.NewDecoder(os.Stdin)
 	for {
@@ -79,7 +81,7 @@ func runHarnessProcess() {
 		}
 		var command inputCommand
 		if err := json.Unmarshal(raw, &command); err != nil {
-			appendDebugLog("harness.command.invalid", map[string]any{"error": err.Error()})
+			appendErrorLog("harness.command.invalid", map[string]any{"error": err.Error()})
 			emitBridgeError(fmt.Sprintf("Harness 命令无效：%v", err))
 			continue
 		}

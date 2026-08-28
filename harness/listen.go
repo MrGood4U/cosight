@@ -63,7 +63,7 @@ func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, spe
 	payload := listenPayload{
 		UtteranceID: utteranceID,
 		Text:        text,
-		Language:    roleLanguage(h.cfg.Role),
+		Language:    roleListeningLanguage(h.cfg.Role),
 		IsFinal:     true,
 		EndedAt:     nowString(),
 	}
@@ -83,6 +83,14 @@ func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, spe
 	}
 	emitLog("listen.completed", listenFields)
 	emitSignal(s)
+	emitDebugLog("conversation.content", map[string]any{
+		"sessionId":   h.cfg.SessionID,
+		"role":        "user",
+		"source":      inputSource,
+		"eventId":     s.EventID,
+		"utteranceId": payload.UtteranceID,
+		"text":        payload.Text,
+	})
 	emit(map[string]any{"type": "user.transcript", "text": payload.Text})
 	h.appendHistory("user", payload.Text)
 	go h.handleCompletedListen(s, payload, "")
@@ -120,7 +128,13 @@ func (h *harness) handleTextInput(text string) {
 func (h *harness) appendHistory(role, text string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.history = append(h.history, conversationMessage{Role: role, Text: truncate(text, maxTextLength), CreatedAt: nowString()})
+	h.historyRevision++
+	h.history = append(h.history, conversationMessage{
+		Role:      role,
+		Text:      truncate(text, maxTextLength),
+		CreatedAt: nowString(),
+		Revision:  h.historyRevision,
+	})
 	if len(h.history) > maxStoredMessages {
 		h.history = h.history[len(h.history)-maxStoredMessages:]
 	}

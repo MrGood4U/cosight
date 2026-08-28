@@ -1,19 +1,22 @@
 {
   "name": "cosight",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Cosight — AI that sees what you see.",
   "main": "electron/main.mjs",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron --in-process-gpu --disable-gpu .\"",
     "build": "vite build",
     "build:harness": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-harness.ps1",
+    "build:system-audio": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-system-audio.ps1",
     "test:electron": "node --test tests/electron/*.test.mjs",
+    "test:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-python.ps1",
     "test:harness": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-harness.ps1",
     "test:integration": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-harness.ps1 -Integration",
-    "test": "npm run test:electron && npm run test:harness && npm run test:integration",
-    "verify": "npm test && npm run build && npm run build:harness",
+    "test:system-audio": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-system-audio.ps1",
+    "test": "npm run test:electron && npm run test:python && npm run test:harness && npm run test:integration && npm run test:system-audio",
+    "verify": "npm test && npm run build && npm run build:harness && npm run build:system-audio",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "sync:sample-roles": "node scripts/sync-sample-roles.mjs",
     "start": "electron ."
@@ -51,6 +54,13 @@
       {
         "from": "build/harness",
         "to": "harness",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/system-audio",
+        "to": "system-audio",
         "filter": [
           "**/*"
         ]

@@ -37,6 +37,11 @@ jobs:
           go-version-file: harness/go.mod
           cache-dependency-path: harness/go.sum
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Node.js dependencies
         run: npm ci
 
@@ -54,6 +59,9 @@ jobs:
       - name: Build Go Harness
         run: npm run build:harness
 
+      - name: Build Windows Process Loopback helper
+        run: npm run build:system-audio
+
       - name: Upload CI build artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -63,3 +71,4 @@ jobs:
           path: |
             dist
             build/harness
+            build/system-audio

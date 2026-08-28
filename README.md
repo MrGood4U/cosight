@@ -3,7 +3,8 @@
 Cosight is a Windows desktop client for real-time multimodal conversations. It
 connects a compatible realtime model to the user's microphone, shared screen,
 voice output, and agent-controlled screen drawing. The same client can switch
-between different Roles, allowing the model's identity, behavior, language,
+between different Roles, allowing the model's identity, behavior, listening
+language, output language,
 voice, knowledge, and available abilities to change from one conversation to
 the next.
 
@@ -29,7 +30,7 @@ the next.
 - **Text input** — typed messages use the same Listen input path as completed
   speech turns, so the rest of the conversation flow remains shared.
 - **Roles** — create reusable prompt profiles with identity, goals, behavior,
-  workflow, constraints, language, voice, knowledge, abilities, and optional
+  workflow, constraints, listening language, output language, voice, knowledge, abilities, and optional
   initiative rules.
 - **Multiple models** — keep the original single-model realtime path, or turn
   on Harness mode from Models and configure independent Brain, Listen, Speak,
@@ -71,7 +72,8 @@ the repository.
 ### 3. Choose or configure a Role
 
 Open **Roles** and choose `Default` or an official example Role. You can also
-create a custom Role with its own identity, behavior, language, voice,
+create a custom Role with its own identity, behavior, listening language,
+output language, voice,
 knowledge, and abilities.
 
 ![Cosight role configuration page](docs/images/03-role-configuration.png)
@@ -217,6 +219,11 @@ Bridge and Electron diagnostics are written under:
 
 Diagnostics record protocol events, tool results, errors, and payload lengths;
 raw audio and video frames are not recorded.
+
+Structured log entries include `INFO`, `ERROR`, and `DEBUG` levels. Normal
+runtime events use `INFO`; failures use `ERROR`. Harness latency aggregates for
+Brain, See, and Speak, plus exact conversation content for later evaluation,
+are written at `DEBUG` level and are not shown in the application UI.
 
 When multi-model Harness mode is enabled, the application also writes
 `cosight-harness.log`. It contains request IDs and stage timings for Listen,

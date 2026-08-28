@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react'
 import { Sparkles } from 'lucide-react'
 import { navItems } from './shared.js'
 import { useCosightSession } from '../hooks/useCosightSession.js'
@@ -9,25 +10,44 @@ import { SettingsPage, SourcePicker } from '../components/SettingsPage.jsx'
 import { UsagePage } from '../components/UsagePage.jsx'
 
 export default function App() {
+  useLayoutEffect(() => {
+    // Every view owns its scroll position through .workspace. Keep the
+    // browser document at the origin so focus changes cannot move the shell
+    // out of the Electron viewport. The root is intentionally not a scroll
+    // container; only .workspace is allowed to own page scrolling.
+    const resetDocumentScroll = () => {
+      const root = document.getElementById('root')
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0)
+      if (document.documentElement.scrollTop !== 0) document.documentElement.scrollTop = 0
+      if (document.body.scrollTop !== 0) document.body.scrollTop = 0
+      if (root?.scrollTop !== 0) root.scrollTop = 0
+    }
+    resetDocumentScroll()
+    window.addEventListener('scroll', resetDocumentScroll, { passive: true })
+    return () => window.removeEventListener('scroll', resetDocumentScroll)
+  }, [])
+
   const {
     activeNav, setActiveNav, language, models, selectedModel, modelMode, harnessModels, harnessSettings,
     harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible,
     setHarnessModelDraft, modelEditorOpen, setModelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible,
     setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteSelectedModel,
     changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel,
-    saveHarnessSettings, deleteHarnessModel, roles, selectedRoleId, roleEditorOpen, roleDraft,
+    saveHarnessSettings, deleteHarnessModel, roles, selectedRole, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft,
     openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, selectRole, deleteRole,
-    isChatActive, t, setNotice, setLanguage, modelReady, micDevices, selectedMic,
-    selectMicrophone, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput,
+    isChatActive, t, setNotice, setLanguage, modelReady, micDevices, selectedMic, audioInputMode,
+    selectMicrophone, selectAudioInputMode, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput,
     changeOutput, outputVolume, setOutputVolume, autoReconnect, setAutoReconnect, pushToTalk,
     setPushToTalk, allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript,
     coreSubtitlesEnabled, setCoreSubtitlesEnabled, sourcePickerOpen, setSourcePickerOpen, sources, sourcesLoading,
     shareSource, rolePromptPreviewOpen, rolePromptPreview, rolePromptPreviewLoading,
     setRolePromptPreviewOpen, notice, exportSessionArtifact, importSessionContext,
     screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection,
-    startChat, isStarting, startChatBlockedReason, screenVideoRef, micMuted, toggleMicrophoneMute,
+    startChat, stopChat, isStarting, startChatBlockedReason, screenVideoRef, micMuted, toggleMicrophoneMute,
     deviceLabel, transcript, assistantDraft, elapsed, setTranscript, submitTextMessage, textInput,
-    setTextInput, textSending, importedContext, setImportedContext,
+    setTextInput, textSending, importedContext, setImportedContext, importLoading, clearConversationContext,
+    isConnected, connectionLabel,
+    toggleNav,
   } = useCosightSession()
 
   return (
@@ -50,7 +70,7 @@ export default function App() {
         </aside>
 
         <main className="workspace">
-          {activeNav === 'abilities' ? <AbilitiesPage t={t} /> : activeNav === 'roles' ? <RolesPage {...{ roles, selectedRoleId, roleEditorOpen, roleDraft, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, selectRole, deleteRole, isChatActive, t, setNotice }} /> : activeNav === 'models' ? <ModelsPage {...{ models, selectedModel, modelMode, harnessModels, harnessSettings, harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, setHarnessModelDraft, modelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteModel: deleteSelectedModel, closeModelEditor: () => setModelEditorOpen(false), changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel, isChatActive, t }} /> : activeNav === 'usage' ? <UsagePage t={t} language={language} /> : activeNav === 'settings' ? <SettingsPage {...{ selectedModel, modelReady, micDevices, selectedMic, selectMicrophone, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput, changeOutput, outputVolume, setOutputVolume, autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk, allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript, coreSubtitlesEnabled, setCoreSubtitlesEnabled, language, setLanguage, t, setNotice }} /> : <ChatPage {...{ screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection, roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat, isStarting, startChatBlockedReason, setActiveNav, t, isConnected, connectionLabel, screenVideoRef, micMuted, toggleMicrophoneMute, deviceLabel, micActive, micLevel, exportSessionArtifact, importSessionContext, importedContext, setImportedContext, importLoading, transcript, assistantDraft, elapsed, setTranscript, submitTextMessage, textInput, setTextInput, textSending }} />}
+          {activeNav === 'abilities' ? <AbilitiesPage t={t} /> : activeNav === 'roles' ? <RolesPage {...{ roles, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, selectRole, deleteRole, isChatActive, t, setNotice }} /> : activeNav === 'models' ? <ModelsPage {...{ models, selectedModel, modelMode, harnessModels, harnessSettings, harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, setHarnessModelDraft, modelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteModel: deleteSelectedModel, closeModelEditor: () => setModelEditorOpen(false), changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel, isChatActive, t }} /> : activeNav === 'usage' ? <UsagePage t={t} language={language} /> : activeNav === 'settings' ? <SettingsPage {...{ selectedModel, modelReady, micDevices, selectedMic, audioInputMode, selectAudioInputMode, selectMicrophone, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput, changeOutput, outputVolume, setOutputVolume, autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk, allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript, coreSubtitlesEnabled, setCoreSubtitlesEnabled, language, setLanguage, t, setNotice }} /> : <ChatPage {...{ screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection, roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat, clearConversationContext, isStarting, startChatBlockedReason, setActiveNav, t, isConnected, connectionLabel, screenVideoRef, micMuted, toggleMicrophoneMute, deviceLabel, micActive, micLevel, exportSessionArtifact, importSessionContext, importedContext, setImportedContext, importLoading, transcript, assistantDraft, setTranscript, textInput, setTextInput, textSending }} />}
         </main>
 
       </div>

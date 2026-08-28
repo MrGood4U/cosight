@@ -15,6 +15,7 @@ import {
   DEFAULT_HARNESS_SETTINGS,
   HARNESS_MODULES,
 } from '../app/shared.js'
+import { ModelEditor, ToggleRow } from './SettingsPage.jsx'
 
 export function ModelsPage({ models, selectedModel, modelMode, harnessModels, harnessSettings, harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, setHarnessModelDraft, modelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteModel, closeModelEditor, changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel, isChatActive, t }) {
   const activeHarnessEditor = harnessEditorModule && harnessModelDraft ? <HarnessModelEditor id={`harness-editor-${harnessEditorModule}`} draft={harnessModelDraft} setDraft={setHarnessModelDraft} apiKeyVisible={harnessApiKeyVisible} setApiKeyVisible={setHarnessApiKeyVisible} onSave={saveHarnessModel} onCancel={closeHarnessModelEditor} t={t} /> : null

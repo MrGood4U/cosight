@@ -13,6 +13,7 @@ type harness struct {
 	stateMu  sync.Mutex
 	brainMu  sync.Mutex
 	actionMu sync.Mutex
+	latency  *latencyMetrics
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -22,7 +23,13 @@ type harness struct {
 	sessionStartedAt time.Time
 	speechStartedAt  time.Time
 
-	history []conversationMessage
+	history                   []conversationMessage
+	conversationSummary       conversationSummary
+	historyRevision           uint64
+	summaryCoveredRevision    uint64
+	summaryGeneration         uint64
+	summaryInFlight           bool
+	summaryInFlightGeneration uint64
 
 	latestFrame    string
 	seeInFlight    *seeFuture
@@ -44,7 +51,10 @@ type harness struct {
 }
 
 func newHarness() *harness {
-	return &harness{pendingActions: make(map[string]chan actionResult)}
+	return &harness{
+		pendingActions: make(map[string]chan actionResult),
+		latency:        newLatencyMetrics(),
+	}
 }
 
 func (h *harness) start(config startConfig) error {
@@ -76,6 +86,16 @@ func (h *harness) start(config startConfig) error {
 	h.ctx, h.cancel = context.WithCancel(context.Background())
 	h.sessionStartedAt = time.Now()
 	h.history = importedHistory(config.ImportedContext)
+	h.historyRevision = 0
+	for index := range h.history {
+		h.historyRevision++
+		h.history[index].Revision = h.historyRevision
+	}
+	h.conversationSummary = normalizeConversationSummary(config.ConversationSummary)
+	h.summaryCoveredRevision = h.historyRevision
+	h.summaryGeneration++
+	h.summaryInFlight = false
+	h.summaryInFlightGeneration = h.summaryGeneration
 	h.latestFrame = ""
 	h.latestSee = nil
 	h.latestSeeEvent = ""
@@ -88,6 +108,7 @@ func (h *harness) start(config startConfig) error {
 	h.screenSharing = config.ScreenSharing
 	h.visionHistory = nil
 	h.mu.Unlock()
+	h.resetLatencyMetrics(config.SessionID)
 
 	modelNames := map[string]string{}
 	for module, profile := range config.Models {
@@ -126,7 +147,7 @@ func (h *harness) start(config startConfig) error {
 	}
 	if config.ListeningEnabled {
 		profile := config.Models["listen"]
-		client, err := newASRClient(profile, roleLanguage(config.Role), h.handleASREvent)
+		client, err := newASRClient(profile, roleListeningLanguage(config.Role), h.handleASREvent)
 		if err != nil {
 			h.stop()
 			return fmt.Errorf("Harness ASR 启动失败：%w", err)
@@ -141,6 +162,7 @@ func (h *harness) start(config startConfig) error {
 		"sessionId": config.SessionID,
 	})
 	emit(map[string]any{"type": "bridge.ready", "mode": "harness", "sessionId": config.SessionID})
+	h.maybeStartConversationSummary()
 	return nil
 }
 
@@ -189,6 +211,12 @@ func (h *harness) stopInternal(announce bool) {
 	sessionID := h.cfg.SessionID
 	sessionStartedAt := h.sessionStartedAt
 	h.sessionStartedAt = time.Time{}
+	// Invalidate any asynchronous summary request before cancelling the
+	// session context. A provider may return after cancellation, so the
+	// generation check in finishConversationSummary must reject that result.
+	h.summaryGeneration++
+	h.summaryInFlight = false
+	h.summaryInFlightGeneration = h.summaryGeneration
 	h.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -211,6 +239,7 @@ func (h *harness) stopInternal(announce bool) {
 			"durationMs": durationMS(sessionStartedAt),
 			"cause":      map[bool]string{true: "requested", false: "restart_or_exit"}[announce],
 		})
+		h.emitLatencySummary("session.stopped")
 	}
 	if announce {
 		emit(map[string]any{"type": "bridge.stopped", "mode": "harness"})

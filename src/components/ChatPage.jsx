@@ -24,7 +24,7 @@ export function ChatPage(props) {
   const {
     screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection, t,
     isConnected, connectionLabel, importLoading,
-    roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat,
+    roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat, clearConversationContext,
     isStarting, startChatBlockedReason, setActiveNav, screenVideoRef, micMuted, toggleMicrophoneMute,
     deviceLabel, micActive, micLevel, exportSessionArtifact, importSessionContext, importedContext,
     setImportedContext, transcript, assistantDraft, elapsed, setTranscript, submitTextMessage,
@@ -71,7 +71,7 @@ export function ChatPage(props) {
      {importLoading ? <LoaderCircle className="spin" size={14} /> : <Upload size={14} />}
      {importLoading ? t('transcript.importing') : t('transcript.importContext')}
    </button>
-   <button type="button" className="clear-button" onClick={() => setTranscript([])} title={t('transcript.clear')}>
+   <button type="button" className="clear-button" onClick={clearConversationContext} title={t('transcript.clear')}>
      <Copy size={14} /> {t('transcript.clear')}
    </button>
  </div>
