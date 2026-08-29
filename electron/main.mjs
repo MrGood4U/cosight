@@ -31,6 +31,10 @@ let usageLogPath
 const sampleRolesPath = isDev
   ? join(__dirname, '..', 'data', 'sample-roles.json')
   : join(process.resourcesPath, 'data', 'sample-roles.json')
+const owenVisualInterviewPolicyPath = isDev
+  ? join(__dirname, '..', 'data', 'owen-visual-interview-policy.md')
+  : join(process.resourcesPath, 'data', 'owen-visual-interview-policy.md')
+const OWEN_ROLE_ID = '1cf1ab33-39ca-444a-a90e-c1b013f3620c'
 const DEFAULT_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
 const SESSION_ARTIFACT_FORMAT = 'cosight-session'
 const SESSION_ARTIFACT_VERSION = 1
@@ -59,6 +63,7 @@ let overlayWindow
 let overlayReady = false
 let overlaySource
 let bundledSampleRolesCache
+let owenVisualInterviewPolicyCache
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -83,6 +88,22 @@ function serializeError(error) {
     message: error.message || String(error),
     stack: error.stack,
   }
+}
+
+function builtinVisualInterviewPolicy(role) {
+  if (!role || role.id !== OWEN_ROLE_ID) return ''
+  if (typeof owenVisualInterviewPolicyCache === 'string') return owenVisualInterviewPolicyCache
+  try {
+    owenVisualInterviewPolicyCache = readFileSync(owenVisualInterviewPolicyPath, 'utf8').trim()
+  } catch (error) {
+    owenVisualInterviewPolicyCache = ''
+    debugLog('roles.visual_policy_load_error', {
+      roleId: OWEN_ROLE_ID,
+      policyPath: owenVisualInterviewPolicyPath,
+      error: serializeError(error),
+    })
+  }
+  return owenVisualInterviewPolicyCache
 }
 
 function getElectronLogPath() {
@@ -387,6 +408,8 @@ function publicRole(role) {
   const abilities = normalizeRoleAbilities(role.abilities)
   const screenVisionEnabled = abilities.includes('screenVision')
   const initiativeEnabled = abilities.includes('initiative')
+  const drawingPolicy = abilities.includes('drawing') ? normalizeRoleText(role.drawingPolicy, 20000) : ''
+  const visualInterviewPolicy = builtinVisualInterviewPolicy(role)
   return {
     id: role.id,
     isBuiltin: Boolean(role.isBuiltin),
@@ -404,7 +427,7 @@ function publicRole(role) {
     avatar: typeof role.avatar === 'string' && role.avatar.startsWith('data:image/') ? role.avatar : '',
     avatarName: role.avatarName || '',
     abilities,
-    drawingPolicy: abilities.includes('drawing') ? normalizeRoleText(role.drawingPolicy, 20000) : '',
+    drawingPolicy: [drawingPolicy, visualInterviewPolicy].filter(Boolean).join('\n\n'),
     writingPolicy: abilities.includes('drawing') ? normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000) : '',
     screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(role.screenVisionIntervalSec) : '',
     screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(role.screenVisionChangeThreshold) : '',

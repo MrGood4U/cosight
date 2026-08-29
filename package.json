@@ -68,6 +68,10 @@
       {
         "from": "data/sample-roles.json",
         "to": "data/sample-roles.json"
+      },
+      {
+        "from": "data/owen-visual-interview-policy.md",
+        "to": "data/owen-visual-interview-policy.md"
       }
     ],
     "directories": {
