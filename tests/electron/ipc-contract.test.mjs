@@ -5,6 +5,7 @@ import test from 'node:test'
 const preloadSource = await readFile(new URL('../../electron/preload.cjs', import.meta.url), 'utf8')
 const mainSource = await readFile(new URL('../../electron/main.mjs', import.meta.url), 'utf8')
 const owenVisualPolicy = await readFile(new URL('../../data/owen-visual-interview-policy.md', import.meta.url), 'utf8')
+const sampleRoles = JSON.parse(await readFile(new URL('../../data/sample-roles.json', import.meta.url), 'utf8'))
 
 function collectRendererChannels(pattern) {
   return [...preloadSource.matchAll(pattern)].map((match) => match[1])
@@ -46,4 +47,13 @@ test('Owen interviewer keeps its visual system-design policy bundled into drawin
   assert.match(mainSource, /OWEN_ROLE_ID/)
   assert.match(mainSource, /owenVisualInterviewPolicyPath/)
   assert.match(mainSource, /drawingPolicy: \[drawingPolicy, visualInterviewPolicy\]/)
+})
+
+test('Owen interviewer reads its 100-second initiative timeout from the official role data', () => {
+  const owen = sampleRoles.roles.find((role) => role.id === '1cf1ab33-39ca-444a-a90e-c1b013f3620c')
+  assert.equal(owen?.initiativeTimeoutSec, 100)
+  assert.match(owen?.initiativePrompt || '', /Default idle threshold: 100 seconds\./)
+  assert.doesNotMatch(owen?.initiativePrompt || '', /Default idle threshold: 20 seconds\./)
+  assert.doesNotMatch(mainSource, /OWEN_INITIATIVE_TIMEOUT_SEC/)
+  assert.doesNotMatch(mainSource, /resolveRoleInitiativeTimeout/)
 })
