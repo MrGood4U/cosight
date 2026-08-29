@@ -423,7 +423,7 @@ def build_session_instructions(
 
 
 def parse_tool_arguments(raw_arguments: Any) -> Dict[str, Any]:
-    """Parse a tool payload without letting trailing model output kill the session."""
+    """Parse a tool payload without letting formatting or trailing output kill the session."""
     if isinstance(raw_arguments, dict):
         return raw_arguments
     if raw_arguments is None:
@@ -432,6 +432,22 @@ def parse_tool_arguments(raw_arguments: Any) -> Dict[str, Any]:
     text = str(raw_arguments).strip()
     if not text:
         return {}
+
+    # Models occasionally wrap a function payload in a Markdown JSON fence
+    # even though the realtime tool contract asks for JSON directly. Unwrap
+    # only a labelled JSON fence so malformed or unknown content still gets
+    # reported through the normal parse-error path below.
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline > 0:
+            fence_label = text[3:first_newline].strip().lower()
+            closing_fence = text.find("```", first_newline + 1)
+            if fence_label in {"json", "jsonc"} and closing_fence >= 0:
+                fenced_body = text[first_newline + 1:closing_fence].strip()
+                fenced_trailing = text[closing_fence + 3:].strip()
+                text = fenced_body
+                if fenced_trailing:
+                    text += "\n" + fenced_trailing
 
     decoder = json.JSONDecoder()
     try:
@@ -457,7 +473,14 @@ def parse_tool_arguments(raw_arguments: Any) -> Dict[str, Any]:
             "type": "bridge.log",
             "message": "绘画工具参数包含额外片段，已使用第一个完整 JSON 对象继续会话。",
         })
-    return value if isinstance(value, dict) else {}
+    parsed = value if isinstance(value, dict) else {}
+    if trailing and isinstance(parsed, dict):
+        # Keep the valid tool payload usable while exposing the discarded
+        # suffix to diagnostics/tests. Consumers ignore this private field
+        # when applying the drawing, focus, or writing command.
+        parsed = dict(parsed)
+        parsed["__trailingData"] = trailing
+    return parsed
 
 
 for output_stream in (sys.stdout, sys.stderr):
