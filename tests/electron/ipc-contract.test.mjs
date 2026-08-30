@@ -39,6 +39,26 @@ test('main process emits the event consumed by the preload subscription', () => 
   assert.match(mainSource, /webContents\.send\(\s*['"]qwen:event['"]/)
 })
 
+test('Embedding knowledge retrieval stays in the main process and reaches Harness by event id', () => {
+  assert.match(preloadSource, /saveEmbeddingModel/)
+  assert.match(preloadSource, /onKnowledgeStatus/)
+  assert.match(mainSource, /settings:save-embedding-model/)
+  assert.match(preloadSource, /reindexRoleKnowledge/)
+  assert.match(mainSource, /roles:reindex-knowledge/)
+  assert.match(mainSource, /knowledgeBuilds = new Map/)
+  assert.match(mainSource, /payload\?\.type === 'knowledge\.query'/)
+  assert.match(mainSource, /activeRuntime === 'legacy'\) void handleLegacyKnowledgeQuery/)
+  assert.match(mainSource, /embeddingModelFingerprint/)
+  assert.match(mainSource, /searchKnowledgeDatabaseAsync/)
+  assert.match(mainSource, /knowledgeBuildCancels = new Map/)
+  assert.match(mainSource, /cancelKnowledgeBuild\(roleId\)/)
+  assert.doesNotMatch(mainSource, /await activeBuild/)
+  assert.match(mainSource, /removeRoleData/)
+  assert.match(mainSource, /canPublish/)
+  assert.match(mainSource, /type: 'knowledge\.context'/)
+  assert.match(mainSource, /knowledgeMode: normalizeKnowledgeMode\(config\?\.role\?\.knowledgeMode\)/)
+})
+
 test('Owen interviewer keeps its visual system-design policy bundled into drawing guidance', () => {
   assert.match(owenVisualPolicy, /system-design exercise/i)
   assert.match(owenVisualPolicy, /share the entire screen/i)

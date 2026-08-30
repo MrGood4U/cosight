@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Cpu,
+  Database,
   Monitor,
   Settings as SettingsIcon,
   Sparkles,
@@ -10,6 +11,9 @@ import {
 export const DEFAULT_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
 export const DEFAULT_HARNESS_HTTP_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 export const HARNESS_MODULES = ['brain', 'listen', 'speak', 'see']
+export const EMBEDDING_MODEL_TYPES = ['cloud', 'local']
+export const KNOWLEDGE_MODES = ['prompt', 'rag']
+export const DEFAULT_KNOWLEDGE_MODE = 'prompt'
 export const DEFAULT_HARNESS_SETTINGS = {
   seeMinIntervalMs: 5000,
   recentConversationCount: 20,
@@ -143,6 +147,7 @@ export const navItems = [
   { key: 'abilities', labelKey: 'nav.abilities', icon: Sparkles },
   { key: 'roles', labelKey: 'nav.roles', icon: UserRound },
   { key: 'models', labelKey: 'nav.models', icon: Cpu },
+  { key: 'embeddings', labelKey: 'nav.embeddings', icon: Database },
   { key: 'usage', labelKey: 'nav.usage', icon: BarChart3 },
   { key: 'settings', labelKey: 'nav.settings', icon: SettingsIcon },
 ]
@@ -325,6 +330,26 @@ export function emptyRoleDraft() {
     abilities: [...NEW_ROLE_DEFAULT_ABILITY_IDS],
     knowledgeText: '',
     knowledgeFiles: [],
+    knowledgeMode: DEFAULT_KNOWLEDGE_MODE,
+    embeddingModelId: '',
+    knowledgeStatus: null,
+  }
+}
+
+export function normalizeKnowledgeMode(value) {
+  return value === 'rag' ? 'rag' : DEFAULT_KNOWLEDGE_MODE
+}
+
+export function emptyEmbeddingModelDraft(type = 'cloud') {
+  return {
+    id: '',
+    type: EMBEDDING_MODEL_TYPES.includes(type) ? type : 'cloud',
+    alias: '',
+    name: '',
+    model: '',
+    url: '',
+    dimensions: '',
+    apiKey: '',
   }
 }
 
@@ -481,6 +506,8 @@ export function sessionRoleSnapshot(role) {
     initiativeTimeoutSec: role.initiativeTimeoutSec ?? '',
     initiativePrompt: typeof role.initiativePrompt === 'string' ? role.initiativePrompt : '',
     knowledgeText: typeof role.knowledgeText === 'string' ? role.knowledgeText : '',
+    knowledgeMode: role.knowledgeMode === 'rag' ? 'rag' : 'prompt',
+    embeddingModelId: typeof role.embeddingModelId === 'string' ? role.embeddingModelId : '',
     knowledgeFiles: Array.isArray(role.knowledgeFiles)
       ? role.knowledgeFiles.map((file) => ({
           id: typeof file?.id === 'string' ? file.id : '',

@@ -6,3 +6,4 @@ export { ModelsPage, HarnessContextSettings, HarnessModelCard, HarnessModelEdito
 export { RolesPage, RoleCard, RoleEditor, RoleSelector, PromptPreview, RoleTextarea } from './RolesPage.jsx'
 export { SettingsPage, ModelEditor, DeviceSelect, ToggleRow, SourcePicker } from './SettingsPage.jsx'
 export { UsagePage, UsageChart, UsageDataTable } from './UsagePage.jsx'
+export { EmbeddingPage, EmbeddingModelCard, EmbeddingModelEditor } from './EmbeddingPage.jsx'

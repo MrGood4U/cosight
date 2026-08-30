@@ -9,19 +9,23 @@ import (
 )
 
 type harness struct {
-	mu       sync.Mutex
-	stateMu  sync.Mutex
-	brainMu  sync.Mutex
-	actionMu sync.Mutex
-	latency  *latencyMetrics
+	mu           sync.Mutex
+	stateMu      sync.Mutex
+	brainMu      sync.Mutex
+	actionExecMu sync.Mutex
+	actionMu     sync.Mutex
+	knowledgeMu  sync.Mutex
+	ttsMu        sync.Mutex
+	latency      *latencyMetrics
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	cfg    startConfig
 	asr    *asrClient
 
-	sessionStartedAt time.Time
-	speechStartedAt  time.Time
+	sessionStartedAt  time.Time
+	speechStartedAt   time.Time
+	sessionGeneration uint64
 
 	history                   []conversationMessage
 	conversationSummary       conversationSummary
@@ -47,13 +51,21 @@ type harness struct {
 	screenSharing      bool
 	visionHistory      []visionHistoryEntry
 
-	pendingActions map[string]chan actionResult
+	pendingActions         map[string]chan actionResult
+	knowledgeWaiters       map[string]chan knowledgeResult
+	turnCancels            map[string]context.CancelFunc
+	ttsSockets             map[*realtimeSocket]uint64
+	asrReconnectCancel     context.CancelFunc
+	asrReconnectGeneration uint64
 }
 
 func newHarness() *harness {
 	return &harness{
-		pendingActions: make(map[string]chan actionResult),
-		latency:        newLatencyMetrics(),
+		pendingActions:   make(map[string]chan actionResult),
+		knowledgeWaiters: make(map[string]chan knowledgeResult),
+		turnCancels:      make(map[string]context.CancelFunc),
+		ttsSockets:       make(map[*realtimeSocket]uint64),
+		latency:          newLatencyMetrics(),
 	}
 }
 
@@ -107,6 +119,10 @@ func (h *harness) start(config startConfig) error {
 	h.seeAnalyzing = nil
 	h.screenSharing = config.ScreenSharing
 	h.visionHistory = nil
+	h.knowledgeMu.Lock()
+	h.knowledgeWaiters = make(map[string]chan knowledgeResult)
+	h.knowledgeMu.Unlock()
+	h.turnCancels = make(map[string]context.CancelFunc)
 	h.mu.Unlock()
 	h.resetLatencyMetrics(config.SessionID)
 
@@ -122,6 +138,7 @@ func (h *harness) start(config startConfig) error {
 		"speakingEnabled":         config.SpeakingEnabled,
 		"drawingEnabled":          config.DrawingEnabled,
 		"initiativeEnabled":       config.InitiativeEnabled,
+		"knowledgeMode":           config.KnowledgeMode,
 		"recentConversationCount": config.RecentConversationCount,
 		"recentVisionCount":       config.RecentVisionCount,
 		"seeMinIntervalMs":        config.SeeMinIntervalMS,
@@ -147,14 +164,26 @@ func (h *harness) start(config startConfig) error {
 	}
 	if config.ListeningEnabled {
 		profile := config.Models["listen"]
-		client, err := newASRClient(profile, roleListeningLanguage(config.Role), h.handleASREvent)
+		h.mu.Lock()
+		generation := h.sessionGeneration
+		sessionID := h.cfg.SessionID
+		sessionCtx := h.ctx
+		h.mu.Unlock()
+		client, err := newASRClient(sessionCtx, profile, roleListeningLanguage(config.Role), generation, sessionID, h.handleASREventFrom)
 		if err != nil {
 			h.stop()
 			return fmt.Errorf("Harness ASR 启动失败：%w", err)
 		}
 		h.mu.Lock()
-		h.asr = client
+		current := h.ctx != nil && h.sessionGeneration == generation && h.cfg.SessionID == sessionID
+		if current {
+			h.asr = client
+		}
 		h.mu.Unlock()
+		if !current {
+			client.closeSession()
+			return fmt.Errorf("Harness session 在 ASR 启动期间已失效")
+		}
 	} else {
 		emitLog("listen.disabled", map[string]any{"reason": "capability_disabled"})
 	}
@@ -204,10 +233,20 @@ func (h *harness) stop() {
 
 func (h *harness) stopInternal(announce bool) {
 	h.mu.Lock()
+	oldGeneration := h.sessionGeneration
+	h.sessionGeneration++
 	client := h.asr
 	h.asr = nil
 	cancel := h.cancel
 	h.cancel = nil
+	// Clearing ctx makes the stopped state observable to turn admission. A
+	// queued turn keeps its own context so cancellation can still unwind any
+	// in-flight provider call, but no new turn may snapshot the old session.
+	h.ctx = nil
+	turnCancels := h.turnCancels
+	h.turnCancels = make(map[string]context.CancelFunc)
+	asrReconnectCancel := h.asrReconnectCancel
+	h.asrReconnectCancel = nil
 	sessionID := h.cfg.SessionID
 	sessionStartedAt := h.sessionStartedAt
 	h.sessionStartedAt = time.Time{}
@@ -221,9 +260,16 @@ func (h *harness) stopInternal(announce bool) {
 	if cancel != nil {
 		cancel()
 	}
+	for _, cancelTurn := range turnCancels {
+		cancelTurn()
+	}
+	if asrReconnectCancel != nil {
+		asrReconnectCancel()
+	}
 	if client != nil {
 		client.closeSession()
 	}
+	h.closeTTSSocketsThrough(oldGeneration)
 	h.actionMu.Lock()
 	for actionID, channel := range h.pendingActions {
 		select {
@@ -244,4 +290,40 @@ func (h *harness) stopInternal(announce bool) {
 	if announce {
 		emit(map[string]any{"type": "bridge.stopped", "mode": "harness"})
 	}
+}
+
+func (h *harness) reconnectASR(ctx context.Context, profile modelProfile, language string, generation uint64, sessionID string) {
+	client, err := newASRClient(ctx, profile, language, generation, sessionID, h.handleASREventFrom)
+	if err != nil {
+		h.finishASRReconnect(generation)
+		emitLog("listen.reconnect.failed", map[string]any{
+			"sessionId":  sessionID,
+			"generation": generation,
+			"error":      err.Error(),
+		})
+		return
+	}
+	h.mu.Lock()
+	current := h.ctx != nil && h.asr == nil && h.sessionGeneration == generation && h.cfg.SessionID == sessionID && h.asrReconnectGeneration == generation
+	if current {
+		h.asr = client
+		h.asrReconnectCancel = nil
+	}
+	h.mu.Unlock()
+	if !current {
+		client.closeSession()
+		return
+	}
+	emitLog("listen.reconnect.completed", map[string]any{
+		"sessionId":  sessionID,
+		"generation": generation,
+	})
+}
+
+func (h *harness) finishASRReconnect(generation uint64) {
+	h.mu.Lock()
+	if h.asrReconnectGeneration == generation {
+		h.asrReconnectCancel = nil
+	}
+	h.mu.Unlock()
 }

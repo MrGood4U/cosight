@@ -1,245 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-func (h *harness) handleInitiative(prompt string) {
-	prompt = truncate(strings.TrimSpace(prompt), maxTextLength)
-	if prompt == "" {
-		emitLog("initiative.ignored", map[string]any{"reason": "empty"})
-		return
-	}
-	if !h.cfg.InitiativeEnabled {
-		emitLog("initiative.ignored", map[string]any{
-			"reason":            "disabled",
-			"promptBytes":       len(prompt),
-			"initiativeEnabled": h.cfg.InitiativeEnabled,
-		})
-		return
-	}
-	if !h.cfg.ListeningEnabled || !h.cfg.SpeakingEnabled {
-		emitLog("initiative.ignored", map[string]any{
-			"reason":           "capability_dependency_disabled",
-			"promptBytes":      len(prompt),
-			"listeningEnabled": h.cfg.ListeningEnabled,
-			"speakingEnabled":  h.cfg.SpeakingEnabled,
-		})
-		return
-	}
-	h.mu.Lock()
-	ready := h.cancel != nil && h.ctx != nil && h.asr != nil
-	h.mu.Unlock()
-	if !ready {
-		emitLog("initiative.ignored", map[string]any{
-			"reason":      "session_not_ready",
-			"promptBytes": len(prompt),
-		})
-		return
-	}
-	s := signal{
-		Schema: protocolSchema, Version: protocolVersion, Type: "initiative.triggered",
-		EventID: newID("evt_initiative"), SessionID: h.cfg.SessionID,
-		CreatedAt: nowString(), Source: sourceFor("brain", h.cfg.Models["brain"]),
-	}
-	emitLog("initiative.triggered", map[string]any{
-		"eventId":     s.EventID,
-		"promptBytes": len(prompt),
-	})
-	go h.handleCompletedListen(s, listenPayload{}, prompt)
-}
-
-func (h *harness) handleCompletedListen(listen signal, payload listenPayload, initiativePrompt string) {
-	trigger := "listen"
-	listenEventID := listen.EventID
-	if initiativePrompt != "" {
-		trigger = "initiative"
-		listenEventID = ""
-	}
-	queuedAt := time.Now()
-	brainRequestID := newID("brain_request")
-	emitLog("brain.request.queued", map[string]any{
-		"requestId":             brainRequestID,
-		"trigger":               trigger,
-		"listenEventId":         listenEventID,
-		"triggerEventId":        listen.EventID,
-		"textBytes":             len(payload.Text),
-		"initiativePromptBytes": len(initiativePrompt),
-	})
-	h.brainMu.Lock()
-	lockAcquiredAt := time.Now()
-	status := "started"
-	defer func() {
-		emitLog("brain.request.finished", map[string]any{
-			"requestId":       brainRequestID,
-			"trigger":         trigger,
-			"listenEventId":   listenEventID,
-			"triggerEventId":  listen.EventID,
-			"status":          status,
-			"queueWaitMs":     lockAcquiredAt.Sub(queuedAt).Milliseconds(),
-			"totalDurationMs": durationMS(queuedAt),
-		})
-		h.brainMu.Unlock()
-	}()
-	emitLog("brain.queue.acquired", map[string]any{
-		"requestId":      brainRequestID,
-		"trigger":        trigger,
-		"listenEventId":  listenEventID,
-		"triggerEventId": listen.EventID,
-		"queueWaitMs":    lockAcquiredAt.Sub(queuedAt).Milliseconds(),
-	})
-
-	recentVision, seeEventIDs, visionStatus, visionAgeMS := h.latestVisionSnapshots()
-	var visual *visionPayload
-	seeEventID := ""
-	if len(recentVision) > 0 {
-		visual = recentVision[len(recentVision)-1]
-		seeEventID = seeEventIDs[len(seeEventIDs)-1]
-	}
-	emitLog("brain.vision.snapshot", map[string]any{
-		"requestId":                   brainRequestID,
-		"seeEventId":                  seeEventID,
-		"status":                      visionStatus,
-		"ageMs":                       visionAgeMS,
-		"hasLatestVision":             visual != nil,
-		"recentVisionCount":           len(recentVision),
-		"configuredRecentVisionCount": h.cfg.RecentVisionCount,
-		"waitMs":                      0,
-	})
-	conversationSummary := h.currentConversationSummary()
-	recentTurns := h.recentHistory(h.cfg.RecentConversationCount)
-	// The current utterance is included separately below. Avoid sending it
-	// twice just because the transcript was recorded before Brain woke up.
-	if len(recentTurns) > 0 {
-		last := recentTurns[len(recentTurns)-1]
-		if last.Role == "user" && last.Text == payload.Text {
-			recentTurns = recentTurns[:len(recentTurns)-1]
-		}
-	}
-
-	userInput := map[string]any{
-		"conversationSummary": conversationSummary,
-		"recentTurns":         recentTurns,
-		"latestVision":        visual,
-		"recentVision":        recentVision,
-		"recentVisionCount":   len(recentVision),
-		"latestVisionStatus":  visionStatus,
-		"latestVisionAgeMs":   visionAgeMS,
-		"currentUserText":     payload.Text,
-		"trigger":             trigger,
-		"sessionId":           h.cfg.SessionID,
-	}
-	if initiativePrompt != "" {
-		userInput["initiativePrompt"] = initiativePrompt
-	}
-	encoded, _ := json.Marshal(userInput)
-	brainMaxTokens := 1800
-	brainStartedAt := time.Now()
-	emitLog("brain.model.started", map[string]any{
-		"requestId":                         brainRequestID,
-		"trigger":                           trigger,
-		"listenEventId":                     listenEventID,
-		"triggerEventId":                    listen.EventID,
-		"model":                             h.cfg.Models["brain"].Name,
-		"recentTurnCount":                   len(recentTurns),
-		"configuredRecentConversationCount": h.cfg.RecentConversationCount,
-		"userTextBytes":                     len(payload.Text),
-		"requestBytes":                      len(encoded),
-		"hasLatestVision":                   visual != nil,
-		"recentVisionCount":                 len(recentVision),
-		"configuredRecentVisionCount":       h.cfg.RecentVisionCount,
-		"seeEventId":                        seeEventID,
-		"maxTokens":                         brainMaxTokens,
-		"initiativePromptBytes":             len(initiativePrompt),
-		"conversationSummaryChars":          summaryContentLength(conversationSummary),
-	})
-	content, err := h.callJSONModel(h.cfg.Models["brain"], "brain", brainRequestID, buildRoleSystemPrompt(h.cfg.Role), string(encoded), &brainMaxTokens)
-	brainDurationMS := durationMS(brainStartedAt)
-	if err != nil {
-		status = "brain_failed"
-		emitLog("brain.model.failed", map[string]any{
-			"requestId":  brainRequestID,
-			"trigger":    trigger,
-			"model":      h.cfg.Models["brain"].Name,
-			"durationMs": brainDurationMS,
-			"error":      err.Error(),
-		})
-		h.recordLatency("brain", brainDurationMS)
-		h.logActionFailure("brain", "", "BRAIN_FAILED", err.Error())
-		emitBridgeError(fmt.Sprintf("Brain 请求失败：%v", err))
-		return
-	}
-	emitLog("brain.model.completed", map[string]any{
-		"requestId":    brainRequestID,
-		"model":        h.cfg.Models["brain"].Name,
-		"durationMs":   brainDurationMS,
-		"contentBytes": len(content),
-	})
-	h.recordLatency("brain", brainDurationMS)
-	parseStartedAt := time.Now()
-	action, err := parseBrainAction(content, h.cfg.SessionID, listenEventID, seeEventID)
-	if err != nil {
-		status = "brain_invalid_action"
-		emitLog("brain.parse.failed", map[string]any{
-			"requestId":       brainRequestID,
-			"parseDurationMs": durationMS(parseStartedAt),
-			"totalDurationMs": durationMS(brainStartedAt),
-			"contentBytes":    len(content),
-			"contentPreview":  truncate(content, 4000),
-			"error":           err.Error(),
-		})
-		h.logActionFailure("brain", "", "BRAIN_INVALID_ACTION", err.Error())
-		return
-	}
-	actionTypes := make([]string, 0, len(action.Actions))
-	for _, item := range action.Actions {
-		actionTypes = append(actionTypes, item.Type)
-	}
-	emitLog("brain.parse.completed", map[string]any{
-		"requestId":       brainRequestID,
-		"parseDurationMs": durationMS(parseStartedAt),
-		"actionCount":     len(action.Actions),
-		"actionTypes":     actionTypes,
-		"hasSpeak":        hasActionType(action.Actions, "speak"),
-	})
-	action.ReplyTo = actionReplyTo{ListenEventID: listenEventID, SeeEventID: seeEventID}
-	action.CreatedAt = nowString()
-	action.EventID = newID("evt_action")
-	action.Schema = brainActionSchema
-	action.Version = protocolVersion
-	action.Type = "brain.action"
-	action.SessionID = h.cfg.SessionID
-	status = "action_emitted"
-	emitLog("brain.action.emitted", map[string]any{
-		"requestId":      brainRequestID,
-		"eventId":        action.EventID,
-		"trigger":        trigger,
-		"listenEventId":  listenEventID,
-		"triggerEventId": listen.EventID,
-		"seeEventId":     seeEventID,
-		"actionCount":    len(action.Actions),
-		"actionTypes":    actionTypes,
-	})
-	emit(action)
-	for _, item := range action.Actions {
-		h.executeAction(item)
-	}
-	status = "actions_executed"
-	emitLog("assistant.response.done", map[string]any{
-		"requestId":       brainRequestID,
-		"actionCount":     len(action.Actions),
-		"actionTypes":     actionTypes,
-		"speakingEnabled": h.cfg.SpeakingEnabled,
-	})
-	outputTypes := []string{"text", "harness_action"}
-	if h.cfg.SpeakingEnabled {
-		outputTypes = append(outputTypes, "audio")
-	}
-	emit(map[string]any{"type": "assistant.response.done", "outputTypes": outputTypes})
-}
+var errStaleTurn = errors.New("stale_turn")
 
 func hasActionType(actions []brainAction, actionType string) bool {
 	for _, action := range actions {
@@ -266,26 +36,85 @@ func (h *harness) recentHistory(limit int) []conversationMessage {
 	return result
 }
 
+type actionExecutionConfig struct {
+	sessionID       string
+	speakingEnabled bool
+	drawingEnabled  bool
+	speakProfile    modelProfile
+	role            map[string]any
+}
+
+func (h *harness) currentActionConfig() actionExecutionConfig {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return actionExecutionConfig{
+		sessionID:       h.cfg.SessionID,
+		speakingEnabled: h.cfg.SpeakingEnabled,
+		drawingEnabled:  h.cfg.DrawingEnabled,
+		speakProfile:    h.cfg.Models["speak"],
+		role:            cloneStringMap(h.cfg.Role),
+	}
+}
+
 func (h *harness) executeAction(action brainAction) {
+	_ = h.executeActionWithConfig(nil, h.currentActionConfig(), action)
+}
+
+func (h *harness) executeTurnAction(turn turnRequest, action brainAction) bool {
+	if !h.isTurnCurrent(turn) {
+		return false
+	}
+	return h.executeActionWithConfig(&turn, actionExecutionConfig{
+		sessionID:       turn.sessionID,
+		speakingEnabled: turn.speakingEnabled,
+		drawingEnabled:  turn.drawingEnabled,
+		speakProfile:    turn.speakProfile,
+		role:            turn.role,
+	}, action)
+}
+
+func (h *harness) executeActionWithConfig(turn *turnRequest, config actionExecutionConfig, action brainAction) bool {
+	current := func() bool {
+		return turn == nil || h.isTurnCurrent(*turn)
+	}
+	logFailure := func(actionType, actionID, code string, detail any) bool {
+		if !current() {
+			return false
+		}
+		if turn != nil {
+			return h.logActionFailureForTurn(*turn, actionType, actionID, code, detail)
+		}
+		h.logActionFailure(actionType, actionID, code, detail)
+		return true
+	}
+
 	switch action.Type {
 	case "speak":
 		text := strings.TrimSpace(action.Text)
 		if text == "" {
+			if !current() {
+				return false
+			}
 			emitLog("speak.failed", map[string]any{
 				"actionId": action.ActionID,
 				"code":     "SPEAK_TEXT_EMPTY",
 			})
-			h.logActionFailure("speak", action.ActionID, "SPEAK_TEXT_EMPTY", "speak.text 不能为空")
-			return
+			return logFailure("speak", action.ActionID, "SPEAK_TEXT_EMPTY", "speak.text 不能为空")
+		}
+		if !current() {
+			return false
 		}
 		emitDebugLog("conversation.content", map[string]any{
-			"sessionId": h.cfg.SessionID,
+			"sessionId": config.sessionID,
 			"role":      "assistant",
 			"source":    "brain.speak",
 			"actionId":  action.ActionID,
 			"text":      text,
 		})
-		if !h.cfg.SpeakingEnabled {
+		if !config.speakingEnabled {
+			if !current() {
+				return false
+			}
 			emitLog("speak.skipped", map[string]any{
 				"actionId":  action.ActionID,
 				"textBytes": len(text),
@@ -294,19 +123,38 @@ func (h *harness) executeAction(action brainAction) {
 			// Keep text output and conversation history available when voice
 			// output is disabled, but never open a TTS connection.
 			emit(map[string]any{"type": "assistant.text.delta", "text": text})
-			h.appendHistory("assistant", text)
+			if !h.appendHistoryForTurnIfCurrent(turn, "assistant", text) {
+				return false
+			}
 			h.maybeStartConversationSummary()
+			if !current() {
+				return false
+			}
 			emit(map[string]any{"type": "assistant.text.done", "text": text})
-			return
+			return true
 		}
 		speakStartedAt := time.Now()
+		if !current() {
+			return false
+		}
 		emitLog("speak.started", map[string]any{
 			"actionId":  action.ActionID,
 			"textBytes": len(text),
-			"model":     h.cfg.Models["speak"].Name,
+			"model":     config.speakProfile.Name,
 		})
 		emit(map[string]any{"type": "assistant.text.delta", "text": text})
-		if err := h.speak(text); err != nil {
+		generation := uint64(0)
+		if turn != nil {
+			generation = turn.generation
+		}
+		speakContext := context.Background()
+		if turn != nil && turn.ctx != nil {
+			speakContext = turn.ctx
+		}
+		if err := h.speakWithConfig(text, config.speakProfile, config.role, current, generation, speakContext); err != nil {
+			if !current() {
+				return false
+			}
 			speakDurationMS := durationMS(speakStartedAt)
 			emitLog("speak.failed", map[string]any{
 				"actionId":   action.ActionID,
@@ -314,8 +162,10 @@ func (h *harness) executeAction(action brainAction) {
 				"error":      err.Error(),
 			})
 			h.recordLatency("speak", speakDurationMS)
-			h.logActionFailure("speak", action.ActionID, "SPEAK_FAILED", err.Error())
-			return
+			return logFailure("speak", action.ActionID, "SPEAK_FAILED", err.Error())
+		}
+		if !current() {
+			return false
 		}
 		speakDurationMS := durationMS(speakStartedAt)
 		emitLog("speak.completed", map[string]any{
@@ -324,36 +174,79 @@ func (h *harness) executeAction(action brainAction) {
 			"textBytes":  len(text),
 		})
 		h.recordLatency("speak", speakDurationMS)
-		h.appendHistory("assistant", text)
+		if !h.appendHistoryForTurnIfCurrent(turn, "assistant", text) {
+			return false
+		}
 		h.maybeStartConversationSummary()
+		if !current() {
+			return false
+		}
 		emit(map[string]any{"type": "assistant.text.done", "text": text})
+		return true
 	case "draw":
-		if !h.cfg.DrawingEnabled {
+		if !config.drawingEnabled {
+			if !current() {
+				return false
+			}
 			emitLog("draw.failed", map[string]any{
 				"actionId": action.ActionID,
 				"code":     "DRAW_DISABLED",
 			})
-			h.logActionFailure("draw", action.ActionID, "DRAW_DISABLED", "当前角色或捕获来源未启用绘画")
-			return
+			return logFailure("draw", action.ActionID, "DRAW_DISABLED", "当前角色或捕获来源未启用绘画")
+		}
+		if turn != nil {
+			drawAction := action
+			if drawAction.ActionID == "" {
+				drawAction.ActionID = newID("draw")
+			}
+			drawContext := context.Background()
+			if turn.ctx != nil {
+				drawContext = turn.ctx
+			}
+			return h.executeDrawWithGuard(drawAction, current, func(code string, detail any) bool {
+				return h.logActionFailureForTurn(*turn, "draw", drawAction.ActionID, code, detail)
+			}, drawContext)
 		}
 		h.executeDraw(action)
+		return true
 	default:
-		h.logActionFailure(action.Type, action.ActionID, "ACTION_UNSUPPORTED", "不支持的 Brain action 类型")
+		return logFailure(action.Type, action.ActionID, "ACTION_UNSUPPORTED", "不支持的 Brain action 类型")
 	}
 }
 
 func (h *harness) speak(text string) error {
-	profile := h.cfg.Models["speak"]
-	socket, err := dialRealtime(profile, defaultSpeakURL)
+	config := h.currentActionConfig()
+	return h.speakWithConfig(text, config.speakProfile, config.role, nil, 0, context.Background())
+}
+
+func (h *harness) speakWithConfig(text string, profile modelProfile, role map[string]any, current func() bool, generation uint64, ctx context.Context) error {
+	isCurrent := func() bool {
+		return current == nil || current()
+	}
+	if !isCurrent() {
+		return errStaleTurn
+	}
+	socket, err := dialRealtimeContext(ctx, profile, defaultSpeakURL)
 	if err != nil {
 		return err
 	}
+	if !h.registerTTSSocket(socket, generation, current) {
+		socket.close()
+		return errStaleTurn
+	}
+	defer h.unregisterTTSSocket(socket)
 	defer socket.close()
-	configuredRoleVoice := roleVoice(h.cfg.Role)
+	if !isCurrent() {
+		return errStaleTurn
+	}
+	configuredRoleVoice := roleVoice(role)
 	voice, voiceSource := resolveSpeakVoice(profile.Name, configuredRoleVoice, profile.Voice)
-	speechStyle := roleSpeechStyle(h.cfg.Role)
+	speechStyle := roleSpeechStyle(role)
 	styleApplied := speechStyle != "" && supportsTTSInstructions(profile.Name)
 	if configuredRoleVoice != "" && voiceSource != "role" {
+		if !isCurrent() {
+			return errStaleTurn
+		}
 		emitLog("speak.voice.fallback", map[string]any{
 			"model":          profile.Name,
 			"requestedVoice": configuredRoleVoice,
@@ -362,10 +255,16 @@ func (h *harness) speak(text string) error {
 		})
 	}
 	if speechStyle != "" && !styleApplied {
+		if !isCurrent() {
+			return errStaleTurn
+		}
 		emitLog("speak.style.ignored", map[string]any{
 			"model":  profile.Name,
 			"reason": "model_does_not_support_instructions",
 		})
+	}
+	if !isCurrent() {
+		return errStaleTurn
 	}
 	emitLog("speak.config", map[string]any{
 		"model":        profile.Name,
@@ -385,6 +284,9 @@ func (h *harness) speak(text string) error {
 		// bound without cutting UTF-8 bytes in the middle of a character.
 		session["instructions"] = truncateRunes(speechStyle, 1200)
 	}
+	if !isCurrent() {
+		return errStaleTurn
+	}
 	if err := socket.send(map[string]any{
 		"event_id": newID("event"),
 		"type":     "session.update",
@@ -392,8 +294,14 @@ func (h *harness) speak(text string) error {
 	}); err != nil {
 		return err
 	}
+	if !isCurrent() {
+		return errStaleTurn
+	}
 	if err := socket.send(map[string]any{"event_id": newID("event"), "type": "input_text_buffer.append", "text": text}); err != nil {
 		return err
+	}
+	if !isCurrent() {
+		return errStaleTurn
 	}
 	if err := socket.send(map[string]any{"event_id": newID("event"), "type": "input_text_buffer.commit"}); err != nil {
 		return err
@@ -401,6 +309,9 @@ func (h *harness) speak(text string) error {
 	audioDone := false
 	responseDone := false
 	for {
+		if !isCurrent() {
+			return errStaleTurn
+		}
 		_, data, err := socket.conn.ReadMessage()
 		if err != nil {
 			return err
@@ -413,15 +324,24 @@ func (h *harness) speak(text string) error {
 		switch typeName {
 		case "response.audio.delta":
 			if delta, ok := event["delta"].(string); ok && delta != "" {
+				if !isCurrent() {
+					return errStaleTurn
+				}
 				emit(map[string]any{"type": "assistant.audio.delta", "data": delta})
 			}
 		case "response.audio.done":
 			audioDone = true
+			if !isCurrent() {
+				return errStaleTurn
+			}
 			_ = socket.send(map[string]any{"event_id": newID("event"), "type": "session.finish"})
 			if responseDone {
 				return nil
 			}
 		case "response.done":
+			if !isCurrent() {
+				return errStaleTurn
+			}
 			emitRealtimeUsage("speak", profile.Name, event)
 			responseDone = true
 			if audioDone {
@@ -430,12 +350,25 @@ func (h *harness) speak(text string) error {
 		case "error":
 			return fmt.Errorf("TTS Realtime 返回错误：%s", errorMessage(event))
 		case "session.finished":
+			if !isCurrent() {
+				return errStaleTurn
+			}
 			return nil
 		}
 	}
 }
 
 func (h *harness) executeDraw(action brainAction) {
+	_ = h.executeDrawWithGuard(action, nil, nil, context.Background())
+}
+
+func (h *harness) executeDrawWithGuard(action brainAction, current func() bool, logFailure func(code string, detail any) bool, ctx context.Context) bool {
+	if current != nil && !current() {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	startedAt := time.Now()
 	actionID := action.ActionID
 	if actionID == "" {
@@ -445,6 +378,12 @@ func (h *harness) executeDraw(action brainAction) {
 	h.actionMu.Lock()
 	h.pendingActions[actionID] = resultChannel
 	h.actionMu.Unlock()
+	if current != nil && !current() {
+		h.actionMu.Lock()
+		delete(h.pendingActions, actionID)
+		h.actionMu.Unlock()
+		return false
+	}
 	emit(map[string]any{
 		"type":     "harness.draw.requested",
 		"actionId": actionID,
@@ -461,10 +400,15 @@ func (h *harness) executeDraw(action brainAction) {
 	case result = <-resultChannel:
 	case <-timer.C:
 		result = actionResult{OK: false, Error: "draw_result_timeout"}
+	case <-ctx.Done():
+		result = actionResult{OK: false, Error: "draw_cancelled"}
 	}
 	h.actionMu.Lock()
 	delete(h.pendingActions, actionID)
 	h.actionMu.Unlock()
+	if ctx.Err() != nil || (current != nil && !current()) {
+		return false
+	}
 	if !result.OK {
 		emitLog("draw.failed", map[string]any{
 			"actionId":   actionID,
@@ -472,8 +416,11 @@ func (h *harness) executeDraw(action brainAction) {
 			"durationMs": durationMS(startedAt),
 			"error":      result.Error,
 		})
+		if logFailure != nil {
+			return logFailure("DRAW_FAILED", result.Error)
+		}
 		h.logActionFailure("draw", actionID, "DRAW_FAILED", result.Error)
-		return
+		return true
 	}
 	emitLog("draw.completed", map[string]any{
 		"actionId":    actionID,
@@ -481,6 +428,7 @@ func (h *harness) executeDraw(action brainAction) {
 		"durationMs":  durationMS(startedAt),
 		"resultBytes": len(result.Result),
 	})
+	return true
 }
 
 func (h *harness) receiveActionResult(actionID string, result actionResult) {
@@ -512,9 +460,24 @@ func (h *harness) receiveActionResult(actionID string, result actionResult) {
 }
 
 func (h *harness) logActionFailure(actionType, actionID, code string, detail any) {
+	h.mu.Lock()
+	sessionID := h.cfg.SessionID
+	h.mu.Unlock()
+	h.logActionFailureWithSession(sessionID, actionType, actionID, code, detail)
+}
+
+func (h *harness) logActionFailureForTurn(turn turnRequest, actionType, actionID, code string, detail any) bool {
+	if !h.isTurnCurrent(turn) {
+		return false
+	}
+	h.logActionFailureWithSession(turn.sessionID, actionType, actionID, code, detail)
+	return true
+}
+
+func (h *harness) logActionFailureWithSession(sessionID, actionType, actionID, code string, detail any) {
 	payload := map[string]any{
 		"type":       "harness.action.failed",
-		"sessionId":  h.cfg.SessionID,
+		"sessionId":  sessionID,
 		"actionId":   actionID,
 		"actionType": actionType,
 		"error": map[string]any{
@@ -524,7 +487,7 @@ func (h *harness) logActionFailure(actionType, actionID, code string, detail any
 		"retry": false,
 	}
 	appendErrorLog("harness.action.failed", map[string]any{
-		"sessionId":  h.cfg.SessionID,
+		"sessionId":  sessionID,
 		"actionId":   actionID,
 		"actionType": actionType,
 		"code":       code,

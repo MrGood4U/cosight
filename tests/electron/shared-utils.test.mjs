@@ -126,7 +126,7 @@ test('role, text, and generic value helpers keep unsafe or malformed values boun
   assert.deepEqual(sessionRoleSnapshot({ id: 'r1', language: 'en-US', name: 'Role' }), {
     id: 'r1', name: 'Role', identity: '', goal: '', corePrinciples: '', behavior: '', workflow: '', constraints: '',
     listeningLanguage: 'en-US', outputLanguage: 'en-US', voice: '', speechStyle: '', abilities: [], drawingPolicy: '', writingPolicy: '',
-    screenVisionIntervalSec: '', screenVisionChangeThreshold: '', initiativeTimeoutSec: '', initiativePrompt: '', knowledgeText: '', knowledgeFiles: [],
+    screenVisionIntervalSec: '', screenVisionChangeThreshold: '', initiativeTimeoutSec: '', initiativePrompt: '', knowledgeText: '', knowledgeMode: 'prompt', embeddingModelId: '', knowledgeFiles: [],
   })
 })
 

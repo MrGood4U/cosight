@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('cosight', {
   pickRoleAvatar: () => ipcRenderer.invoke('roles:pick-avatar'),
   previewRolePrompt: (role) => ipcRenderer.invoke('roles:preview-prompt', role),
   saveRole: (role) => ipcRenderer.invoke('roles:save', role),
+  reindexRoleKnowledge: (roleId) => ipcRenderer.invoke('roles:reindex-knowledge', roleId),
   selectRole: (roleId) => ipcRenderer.invoke('roles:select', roleId),
   deleteRole: (roleId) => ipcRenderer.invoke('roles:delete', roleId),
   saveModel: (model) => ipcRenderer.invoke('settings:save-model', model),
@@ -29,6 +30,9 @@ contextBridge.exposeInMainWorld('cosight', {
   saveHarnessModel: (model) => ipcRenderer.invoke('settings:save-harness-model', model),
   deleteHarnessModel: (module) => ipcRenderer.invoke('settings:delete-harness-model', module),
   saveHarnessSettings: (settings) => ipcRenderer.invoke('settings:save-harness-settings', settings),
+  saveEmbeddingModel: (model) => ipcRenderer.invoke('settings:save-embedding-model', model),
+  deleteEmbeddingModel: (modelId) => ipcRenderer.invoke('settings:delete-embedding-model', modelId),
+  testEmbeddingModel: (model) => ipcRenderer.invoke('settings:test-embedding-model', model),
   listDesktopSources: () => ipcRenderer.invoke('desktop:list-sources'),
   exportSession: (artifact) => ipcRenderer.invoke('session:export', artifact),
   importSession: () => ipcRenderer.invoke('session:import'),
@@ -78,5 +82,18 @@ contextBridge.exposeInMainWorld('cosight', {
     }
     ipcRenderer.on('qwen:event', listener)
     return () => ipcRenderer.removeListener('qwen:event', listener)
+  },
+  onKnowledgeStatus: (handler) => {
+    const listener = (_event, payload) => {
+      try {
+        Promise.resolve(handler(payload)).catch((error) => {
+          reportRendererError({ phase: 'knowledge-status-handler', error: serializeError(error) })
+        })
+      } catch (error) {
+        reportRendererError({ phase: 'knowledge-status-handler', error: serializeError(error) })
+      }
+    }
+    ipcRenderer.on('knowledge:status', listener)
+    return () => ipcRenderer.removeListener('knowledge:status', listener)
   },
 })

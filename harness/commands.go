@@ -43,6 +43,8 @@ func (h *harness) handleCommand(command inputCommand) {
 	case "action.result":
 		result := actionResult{OK: command.OK, Result: command.Result, Error: command.Error}
 		h.receiveActionResult(command.ActionID, result)
+	case "knowledge.context":
+		h.receiveKnowledgeContext(command.KnowledgeEventID, command.KnowledgeMatches, command.KnowledgeStatus, commandErrorText(command.Error))
 	case "stop":
 		h.stop()
 	case "start":
@@ -63,6 +65,19 @@ func (h *harness) handleCommand(command inputCommand) {
 	default:
 		emitLog("command.ignored", map[string]any{"type": command.Type})
 	}
+}
+
+func commandErrorText(value any) string {
+	if value == nil {
+		return ""
+	}
+	if message, ok := value.(string); ok {
+		return message
+	}
+	if encoded, err := json.Marshal(value); err == nil {
+		return string(encoded)
+	}
+	return fmt.Sprint(value)
 }
 
 func runHarnessProcess() {

@@ -35,6 +35,7 @@ import {
   usageRangeLabel,
   buildUsageChart,
   emptyRoleDraft,
+  emptyEmbeddingModelDraft,
   toBase64,
   formatElapsed,
   clampNumber,
@@ -69,6 +70,12 @@ const [harnessSettings, setHarnessSettings] = useState(DEFAULT_HARNESS_SETTINGS)
 const [harnessEditorModule, setHarnessEditorModule] = useState('')
 const [harnessModelDraft, setHarnessModelDraft] = useState(null)
 const [harnessApiKeyVisible, setHarnessApiKeyVisible] = useState(false)
+const [embeddingModels, setEmbeddingModels] = useState([])
+const [embeddingEditorOpen, setEmbeddingEditorOpen] = useState(false)
+const [embeddingModelDraft, setEmbeddingModelDraft] = useState(emptyEmbeddingModelDraft())
+const [embeddingApiKeyVisible, setEmbeddingApiKeyVisible] = useState(false)
+const [embeddingTestState, setEmbeddingTestState] = useState('idle')
+const [embeddingTestResult, setEmbeddingTestResult] = useState(null)
 const [modelEditorOpen, setModelEditorOpen] = useState(false)
 const [modelDraft, setModelDraft] = useState({ id: '', alias: '', name: '', url: DEFAULT_REALTIME_URL, apiKey: '' })
 const [modelApiKeyVisible, setModelApiKeyVisible] = useState(false)
@@ -329,6 +336,7 @@ useEffect(() => {
     setModelMode(settings?.modelMode === 'harness' ? 'harness' : 'legacy')
     setHarnessModels({ brain: null, listen: null, speak: null, see: null, ...(settings?.harnessModels || {}) })
     setHarnessSettings({ ...DEFAULT_HARNESS_SETTINGS, ...(settings?.harnessSettings || {}) })
+    setEmbeddingModels(settings?.embeddingModels || [])
     setRoles(settings?.roles || [])
     setSelectedRoleId(settings?.selectedRoleId || '')
   })
@@ -343,8 +351,14 @@ useEffect(() => {
     })
   })
   if (window.cosight?.onQwenEvent) unsubscribe = window.cosight.onQwenEvent(handleQwenEvent)
+  const unsubscribeKnowledge = window.cosight?.onKnowledgeStatus?.((payload) => {
+    if (!payload?.roleId) return
+    setRoles((current) => current.map((role) => role.id === payload.roleId ? { ...role, knowledgeStatus: payload } : role))
+    setRoleDraft((current) => current.id === payload.roleId ? { ...current, knowledgeStatus: payload } : current)
+  }) || (() => {})
   return () => {
     unsubscribe()
+    unsubscribeKnowledge()
     navigator.mediaDevices?.removeEventListener?.('devicechange', loadDevices)
     stopAllCapture()
   }
@@ -1972,6 +1986,82 @@ async function deleteSelectedModel(model = selectedModel) {
   setNotice(t('notices.modelDeleted'))
 }
 
+function openNewEmbeddingModel(type = 'cloud') {
+  setEmbeddingModelDraft(emptyEmbeddingModelDraft(type))
+  setEmbeddingApiKeyVisible(false)
+  setEmbeddingTestState('idle')
+  setEmbeddingTestResult(null)
+  setEmbeddingEditorOpen(true)
+}
+
+function openEditEmbeddingModel(model) {
+  if (!model) return
+  setEmbeddingModelDraft({
+    ...emptyEmbeddingModelDraft(model.type),
+    id: model.id,
+    type: model.type || 'cloud',
+    alias: model.alias || '',
+    name: model.name || '',
+    model: model.model || '',
+    url: model.url || '',
+    dimensions: model.dimensions ? String(model.dimensions) : '',
+    apiKey: '',
+  })
+  setEmbeddingApiKeyVisible(false)
+  setEmbeddingTestState('idle')
+  setEmbeddingTestResult(null)
+  setEmbeddingEditorOpen(true)
+}
+
+async function testEmbeddingModelConfig() {
+  setEmbeddingTestState('testing')
+  setEmbeddingTestResult(null)
+  try {
+    const result = await window.cosight?.testEmbeddingModel?.(embeddingModelDraft)
+    if (!result?.ok) {
+      setEmbeddingTestState('error')
+      setEmbeddingTestResult({ error: result?.error || t('embeddings.testFailed') })
+      return
+    }
+    setEmbeddingTestState('success')
+    setEmbeddingTestResult({ dimensions: result.dimensions })
+    if (!embeddingModelDraft.dimensions && result.dimensions) {
+      setEmbeddingModelDraft((current) => ({ ...current, dimensions: String(result.dimensions) }))
+    }
+  } catch (error) {
+    setEmbeddingTestState('error')
+    setEmbeddingTestResult({ error: error.message || t('embeddings.testFailed') })
+  }
+}
+
+async function saveEmbeddingModel() {
+  const result = await window.cosight?.saveEmbeddingModel?.(embeddingModelDraft)
+  if (!result?.ok) {
+    setNotice(result?.error || t('notices.embeddingModelSaveFailed'))
+    return
+  }
+  setEmbeddingModels((current) => {
+    const next = current.filter((model) => model.id !== result.model.id)
+    return [...next, result.model]
+  })
+  setEmbeddingEditorOpen(false)
+  setEmbeddingTestState('idle')
+  setEmbeddingTestResult(null)
+  setNotice(t('notices.embeddingModelSaved'))
+}
+
+async function deleteEmbeddingModel(model) {
+  if (!model || !window.confirm(t('embeddings.deleteConfirm', { name: model.alias || model.name }))) return
+  const result = await window.cosight?.deleteEmbeddingModel?.(model.id)
+  if (!result?.ok) {
+    setNotice(result?.error || t('notices.embeddingModelDeleteFailed'))
+    return
+  }
+  setEmbeddingModels((current) => current.filter((item) => item.id !== model.id))
+  if (embeddingModelDraft.id === model.id) setEmbeddingEditorOpen(false)
+  setNotice(t('notices.embeddingModelDeleted'))
+}
+
 function openNewRole(returnNav = 'roles') {
   if (isChatActive) return
   setRoleDraft(emptyRoleDraft())
@@ -1984,7 +2074,7 @@ function openEditRole(role) {
   if (!role || role.isBuiltin || isChatActive) return
   const abilities = [...(role.abilities || [])]
   const legacyLanguage = role.language || 'auto'
-  setRoleDraft({ ...emptyRoleDraft(), ...role, listeningLanguage: role.listeningLanguage || legacyLanguage, outputLanguage: role.outputLanguage || legacyLanguage, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || '5') : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || '8') : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])] })
+  setRoleDraft({ ...emptyRoleDraft(), ...role, listeningLanguage: role.listeningLanguage || legacyLanguage, outputLanguage: role.outputLanguage || legacyLanguage, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || '5') : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || '8') : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])], knowledgeMode: role.knowledgeMode || 'prompt', embeddingModelId: role.embeddingModelId || '', knowledgeStatus: role.knowledgeStatus || null })
   setRoleEditorReturnNav('roles')
   setRoleEditorOpen(true)
   setActiveNav('roles')
@@ -2034,6 +2124,24 @@ async function saveRole() {
   setRoleEditorOpen(false)
   setActiveNav(roleEditorReturnNav)
   setNotice(t('notices.roleSaved'))
+}
+
+async function reindexRoleKnowledge(roleId) {
+  let result
+  try {
+    result = await window.cosight?.reindexRoleKnowledge?.(roleId)
+  } catch (error) {
+    result = { ok: false, error: error.message }
+  }
+  if (!result?.ok) {
+    setNotice(result?.error || t('notices.knowledgeReindexFailed'))
+    return false
+  }
+  const status = result.status || { status: 'indexing' }
+  setRoles((current) => current.map((role) => role.id === roleId ? { ...role, knowledgeStatus: status } : role))
+  setRoleDraft((current) => current.id === roleId ? { ...current, knowledgeStatus: status } : current)
+  setNotice(t('notices.knowledgeReindexStarted'))
+  return true
 }
 
 async function selectRole(roleId) {
@@ -2098,7 +2206,7 @@ function playPcm(base64) {
 
 function toggleNav(key) {
   setActiveNav(key)
-  if (key === 'abilities' || key === 'roles' || key === 'models' || key === 'settings') {
+  if (key === 'abilities' || key === 'roles' || key === 'models' || key === 'embeddings' || key === 'settings') {
     setModelEditorOpen(false)
   }
 }
@@ -2169,6 +2277,9 @@ useEffect(() => {
     harnessModels, setHarnessModels, harnessSettings, setHarnessSettings,
     harnessEditorModule, setHarnessEditorModule, harnessModelDraft, setHarnessModelDraft,
     harnessApiKeyVisible, setHarnessApiKeyVisible, modelEditorOpen, setModelEditorOpen,
+    embeddingModels, setEmbeddingModels, embeddingEditorOpen, setEmbeddingEditorOpen,
+    embeddingModelDraft, setEmbeddingModelDraft, embeddingApiKeyVisible, setEmbeddingApiKeyVisible,
+    embeddingTestState, embeddingTestResult,
     modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible,
     roles, setRoles, selectedRoleId, setSelectedRoleId, roleEditorOpen, setRoleEditorOpen,
     roleDraft, setRoleDraft, rolePromptPreviewOpen, setRolePromptPreviewOpen,
@@ -2191,8 +2302,10 @@ useEffect(() => {
     stopScreenShare, toggleMicrophoneMute, startChat, stopChat, clearConversationContext, submitTextMessage,
     openNewModel, openEditModel, saveModel, changeModelMode, openHarnessModelEditor,
     closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel,
+    openNewEmbeddingModel, openEditEmbeddingModel, saveEmbeddingModel, deleteEmbeddingModel,
+    testEmbeddingModelConfig,
     selectModel, deleteSelectedModel, openNewRole, openEditRole, closeRoleEditor,
-    previewRolePrompt, saveRole, selectRole, deleteRole, changeOutput, selectMicrophone, selectAudioInputMode,
+    previewRolePrompt, saveRole, reindexRoleKnowledge, selectRole, deleteRole, changeOutput, selectMicrophone, selectAudioInputMode,
     toggleNav,
   }
 }

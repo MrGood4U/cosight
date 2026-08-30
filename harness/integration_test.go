@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ type mockChatServer struct {
 	brainCalls   chan mockChatCall
 	summaryCalls chan mockChatCall
 	includeDraw  bool
+	brainCount   uint32
 }
 
 func newMockChatServer(t *testing.T, includeDraw bool) *mockChatServer {
@@ -75,9 +78,11 @@ func newMockChatServer(t *testing.T, includeDraw bool) *mockChatServer {
 				content = `{"topic":"mock conversation","facts":["用户完成了 Harness 测试"],"decisions":[],"pendingTasks":[],"lastIntent":"继续验证"}`
 				mock.summaryCalls <- call
 			} else {
-				content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"我看到了这个按钮。"}]}`
+				brainIndex := atomic.AddUint32(&mock.brainCount, 1)
+				actionSuffix := strconv.FormatUint(uint64(brainIndex), 10)
+				content = `{"actions":[{"actionId":"speak_mock_` + actionSuffix + `","type":"speak","text":"我看到了这个按钮。"}]}`
 				if mock.includeDraw {
-					content = `{"actions":[{"actionId":"speak_mock","type":"speak","text":"好的，我来标记这个按钮。"},{"actionId":"draw_mock","type":"draw","operation":"circle","target":{"bbox":{"x":0.1,"y":0.2,"width":0.3,"height":0.3}}}]}`
+					content = `{"actions":[{"actionId":"speak_mock_` + actionSuffix + `","type":"speak","text":"好的，我来标记这个按钮。"},{"actionId":"draw_mock_` + actionSuffix + `","type":"draw","operation":"circle","target":{"bbox":{"x":0.1,"y":0.2,"width":0.3,"height":0.3}}}]}`
 				}
 				mock.brainCalls <- call
 			}
@@ -264,7 +269,36 @@ func TestHarnessMockSessionFlow(t *testing.T) {
 		}
 		return false
 	})
+	// A pending renderer action must not hold the model queue. The second
+	// turn should reach Brain before the first draw result is returned.
+	h.handleCommand(inputCommand{Type: "audio", Data: "AQID"})
+	select {
+	case secondBrainCall := <-chat.brainCalls:
+		secondInput, ok := secondBrainCall.UserContent.(map[string]any)
+		if !ok || secondInput["currentUserText"] != "请圈出这个按钮" {
+			t.Fatalf("second turn did not reach Brain while draw was pending: %+v", secondBrainCall.UserContent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Brain request was blocked by the pending draw action")
+	}
 	h.receiveActionResult(drawActionID, actionResult{OK: true, Result: json.RawMessage(`{"ok":true}`)})
+	waitForCondition(t, "first draw action to finish", func() bool {
+		h.actionMu.Lock()
+		defer h.actionMu.Unlock()
+		_, pending := h.pendingActions[drawActionID]
+		return !pending
+	})
+	var secondDrawActionID string
+	waitForCondition(t, "second draw action to become pending", func() bool {
+		h.actionMu.Lock()
+		defer h.actionMu.Unlock()
+		for actionID := range h.pendingActions {
+			secondDrawActionID = actionID
+			return true
+		}
+		return false
+	})
+	h.receiveActionResult(secondDrawActionID, actionResult{OK: true, Result: json.RawMessage(`{"ok":true}`)})
 	waitForCondition(t, "assistant history after the complete session", func() bool {
 		for _, message := range historySnapshot(h) {
 			if message.Role == "assistant" && message.Text != "" {

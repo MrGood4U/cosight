@@ -1,6 +1,9 @@
 import json
 import sys
+import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from pathlib import Path
@@ -32,6 +35,17 @@ class QwenBridgeUnitTests(unittest.TestCase):
         self.assertEqual(bridge_module._log_level("qwen.event"), "INFO")
         self.assertEqual(bridge_module._log_level("conversation.content"), "DEBUG")
 
+    def test_output_log_level_debug_includes_all_record_levels(self):
+        with patch.dict(bridge_module.os.environ, {}, clear=False):
+            bridge_module.os.environ.pop("COSIGHT_LOG_LEVEL", None)
+            self.assertTrue(bridge_module._should_output_log("DEBUG"))
+            self.assertTrue(bridge_module._should_output_log("INFO"))
+            self.assertTrue(bridge_module._should_output_log("ERROR"))
+        with patch.dict(bridge_module.os.environ, {"COSIGHT_LOG_LEVEL": "INFO"}):
+            self.assertFalse(bridge_module._should_output_log("DEBUG"))
+            self.assertTrue(bridge_module._should_output_log("INFO"))
+            self.assertTrue(bridge_module._should_output_log("ERROR"))
+
     def test_role_languages_and_asr_transcription_are_independent(self):
         role = {"listeningLanguage": "zh-CN", "outputLanguage": "en-US"}
         self.assertEqual(bridge_module.role_listening_language(role), "zh-CN")
@@ -60,6 +74,138 @@ class QwenBridgeUnitTests(unittest.TestCase):
         self.assertNotIn("Drawing policy", disabled)
         self.assertNotIn("Writing policy", disabled)
         self.assertNotIn("Initiative trigger rule", disabled)
+
+    def test_rag_role_does_not_inject_raw_knowledge_into_system_prompt(self):
+        instructions = bridge_module.build_role_instructions({
+            "name": "RAG role",
+            "knowledgeMode": "rag",
+            "knowledgeText": "secret full document",
+            "knowledgeFiles": [{"name": "secret.md", "path": "missing.md"}],
+        })
+        self.assertNotIn("secret full document", instructions)
+        self.assertNotIn("secret.md", instructions)
+        self.assertNotIn("Knowledge (reference only", instructions)
+
+    def test_rag_transcript_requests_and_applies_retrieved_context(self):
+        bridge = bridge_module.OmniBridge()
+        bridge.role = {"id": "role-1", "knowledgeMode": "rag"}
+        bridge.knowledge_mode = True
+        bridge.conversation = FakeConversation()
+        bridge.ready_event.set()
+        events = []
+        original_emit = bridge_module.emit
+        original_multi_modality = bridge_module.MultiModality
+        bridge_module.emit = events.append
+        bridge_module.MultiModality = SimpleNamespace(AUDIO="audio", TEXT="text")
+        try:
+            callback = bridge_module.BridgeCallback(
+                bridge_module.threading.Event(),
+                bridge_module.threading.Event(),
+                "model=mock; endpoint=mock; dashscope=test",
+                bridge,
+            )
+            callback.on_event({"type": "conversation.item.input_audio_transcription.completed", "transcript": "what is relevant?"})
+            query = next(event for event in events if event["type"] == "knowledge.query")
+            self.assertEqual(query["roleId"], "role-1")
+            bridge.apply_knowledge_context(query["eventId"], [{"content": "retrieved answer"}], "ready")
+            time.sleep(0.05)
+            self.assertTrue(any("retrieved answer" in response.get("instructions", "") for response in bridge.conversation.responses))
+            self.assertFalse(bridge.pending_knowledge_turns)
+        finally:
+            bridge_module.emit = original_emit
+            bridge_module.MultiModality = original_multi_modality
+
+    def test_rag_knowledge_events_are_independent_and_late_results_are_ignored(self):
+        bridge = bridge_module.OmniBridge()
+        bridge.role = {"id": "role-1", "knowledgeMode": "rag"}
+        bridge.knowledge_mode = True
+        bridge.conversation = FakeConversation()
+        bridge.ready_event.set()
+        original_multi_modality = bridge_module.MultiModality
+        bridge_module.MultiModality = SimpleNamespace(AUDIO="audio", TEXT="text")
+        try:
+            with patch.object(bridge_module, "KNOWLEDGE_RESPONSE_TIMEOUT_SECONDS", 0.01):
+                first = bridge.request_knowledge("first")
+                second = bridge.request_knowledge("second")
+                self.assertNotEqual(first, second)
+                self.assertEqual(set(bridge.pending_knowledge_turns), {first, second})
+                bridge.apply_knowledge_context(second, [{"content": "second result"}], "ready")
+                time.sleep(0.05)
+                bridge.apply_knowledge_context(first, [{"content": "late first result"}], "ready")
+            time.sleep(0.3)
+            self.assertEqual(len(bridge.conversation.responses), 2)
+            self.assertIsNone(bridge.conversation.responses[0]["instructions"])
+            self.assertIn("second result", bridge.conversation.responses[1]["instructions"])
+            self.assertFalse(bridge.pending_knowledge_turns)
+        finally:
+            bridge_module.MultiModality = original_multi_modality
+
+    def test_context_clear_cancels_pending_rag_and_ignores_late_result(self):
+        bridge = bridge_module.OmniBridge()
+        bridge.role = {"id": "role-1", "knowledgeMode": "rag"}
+        bridge.knowledge_mode = True
+        bridge.conversation = FakeConversation()
+        bridge.ready_event.set()
+        original_multi_modality = bridge_module.MultiModality
+        bridge_module.MultiModality = SimpleNamespace(AUDIO="audio", TEXT="text")
+        try:
+            event_id = bridge.request_knowledge("old question")
+            bridge.clear_context()
+            bridge.apply_knowledge_context(event_id, [{"content": "old knowledge"}], "ready")
+            time.sleep(0.05)
+            self.assertEqual(bridge.conversation.responses, [])
+            self.assertEqual(bridge.pending_knowledge_turns, {})
+        finally:
+            bridge_module.MultiModality = original_multi_modality
+
+    def test_rag_knowledge_timeout_still_creates_the_current_turn_response(self):
+        bridge = bridge_module.OmniBridge()
+        bridge.role = {"id": "role-1", "knowledgeMode": "rag"}
+        bridge.knowledge_mode = True
+        bridge.conversation = FakeConversation()
+        bridge.ready_event.set()
+        original_multi_modality = bridge_module.MultiModality
+        bridge_module.MultiModality = SimpleNamespace(AUDIO="audio", TEXT="text")
+        try:
+            with patch.object(bridge_module, "KNOWLEDGE_RESPONSE_TIMEOUT_SECONDS", 0.01):
+                event_id = bridge.request_knowledge("timeout")
+            time.sleep(0.05)
+            self.assertFalse(bridge.pending_knowledge_turns)
+            self.assertEqual(len(bridge.conversation.responses), 1)
+            self.assertIsNone(bridge.conversation.responses[0]["instructions"])
+        finally:
+            bridge_module.MultiModality = original_multi_modality
+
+    def test_pdf_extraction_stops_at_the_requested_character_limit(self):
+        class FakePage:
+            def __init__(self, text):
+                self.text = text
+                self.calls = 0
+
+            def extract_text(self):
+                self.calls += 1
+                return self.text
+
+        pages = [FakePage("A" * 1000) for _ in range(100)]
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as source:
+            with patch.object(bridge_module, "PdfReader", return_value=SimpleNamespace(pages=pages)):
+                content = bridge_module.extract_knowledge_file({"path": source.name, "maxChars": 120})
+        self.assertLessEqual(len(content), 120)
+        self.assertEqual(pages[0].calls, 1)
+        self.assertEqual(sum(page.calls for page in pages[1:]), 0)
+
+    def test_prompt_knowledge_has_a_cumulative_limit_before_joining_files(self):
+        instructions = bridge_module.build_role_instructions({
+            "name": "large prompt role",
+            "knowledgeMode": "prompt",
+            "knowledgeText": "P" * bridge_module.MAX_KNOWLEDGE_TOTAL_CHARS,
+            "knowledgeFiles": [
+                {"name": f"file-{index}.txt", "content": "F" * 500000}
+                for index in range(100)
+            ],
+        })
+        self.assertLessEqual(instructions.count("P"), bridge_module.MAX_KNOWLEDGE_TOTAL_CHARS)
+        self.assertEqual(instructions.count("F"), 0)
 
     def test_imported_context_and_summary_strip_media(self):
         context = {

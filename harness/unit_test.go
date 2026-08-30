@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestParseBrainActionKeepsSemanticDrawAction(t *testing.T) {
@@ -91,6 +93,86 @@ func TestNormalizeModelUsageSupportsSnakeCaseProviderFields(t *testing.T) {
 	}
 }
 
+func TestKnowledgeContextRoundTripIsRoutedByEventID(t *testing.T) {
+	h := newHarness()
+	h.cfg.KnowledgeMode = "rag"
+	h.prepareKnowledgeRequest("event-knowledge")
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		h.receiveKnowledgeContext("event-knowledge", []map[string]any{{"content": "matching passage", "score": 0.9}}, "ready", "")
+	}()
+	result := h.awaitKnowledgeContext(context.Background(), "event-knowledge")
+	if result.status != "ready" || len(result.matches) != 1 || result.matches[0]["content"] != "matching passage" {
+		t.Fatalf("unexpected knowledge context: %+v", result)
+	}
+}
+
+func TestKnowledgeContextReceivedBeforeAwaitIsRetained(t *testing.T) {
+	h := newHarness()
+	h.cfg.KnowledgeMode = "rag"
+	h.prepareKnowledgeRequest("event-already-received")
+	h.receiveKnowledgeContext("event-already-received", []map[string]any{{"content": "retained passage"}}, "ready", "")
+	h.knowledgeMu.Lock()
+	_, retained := h.knowledgeWaiters["event-already-received"]
+	h.knowledgeMu.Unlock()
+	if !retained {
+		t.Fatal("knowledge result must remain available until await consumes it")
+	}
+
+	result := h.awaitKnowledgeContext(context.Background(), "event-already-received")
+	if result.status != "ready" || len(result.matches) != 1 || result.matches[0]["content"] != "retained passage" {
+		t.Fatalf("unexpected retained knowledge context: %+v", result)
+	}
+	h.knowledgeMu.Lock()
+	defer h.knowledgeMu.Unlock()
+	if _, exists := h.knowledgeWaiters["event-already-received"]; exists {
+		t.Fatal("knowledge waiter should be removed only after await consumes the result")
+	}
+}
+
+func TestKnowledgeContextReadsElectronErrorField(t *testing.T) {
+	h := newHarness()
+	h.cfg.KnowledgeMode = "rag"
+	h.prepareKnowledgeRequest("event-error")
+	var command inputCommand
+	if err := json.Unmarshal([]byte(`{"type":"knowledge.context","eventId":"event-error","status":"error","error":"embedding service unavailable"}`), &command); err != nil {
+		t.Fatalf("failed to decode Electron knowledge context: %v", err)
+	}
+	h.handleCommand(command)
+
+	result := h.awaitKnowledgeContext(context.Background(), "event-error")
+	if result.status != "error" || result.err != "embedding service unavailable" {
+		t.Fatalf("expected Electron error field to reach the knowledge result, got %+v", result)
+	}
+}
+
+func TestKnowledgeContextIsDisabledWithoutRAGMode(t *testing.T) {
+	h := newHarness()
+	result := h.awaitKnowledgeContext(context.Background(), "event-disabled")
+	if result.status != "disabled" || len(result.matches) != 0 {
+		t.Fatalf("expected disabled knowledge context, got %+v", result)
+	}
+}
+
+func TestPromptKnowledgeIncludesHydratedFilesButRAGDoesNotInjectRawText(t *testing.T) {
+	prompt := buildRoleSystemPrompt(map[string]any{
+		"knowledgeMode":  "prompt",
+		"knowledgeText":  "pasted reference",
+		"knowledgeFiles": []any{map[string]any{"name": "notes.md", "content": "file reference"}},
+	})
+	if !strings.Contains(prompt, "pasted reference") || !strings.Contains(prompt, "file reference") {
+		t.Fatalf("prompt mode should include raw knowledge: %s", prompt)
+	}
+	ragPrompt := buildRoleSystemPrompt(map[string]any{
+		"knowledgeMode":  "rag",
+		"knowledgeText":  "do not inject this",
+		"knowledgeFiles": []any{map[string]any{"name": "notes.md", "content": "do not inject this either"}},
+	})
+	if strings.Contains(ragPrompt, "do not inject this") || strings.Contains(ragPrompt, "do not inject this either") {
+		t.Fatalf("RAG mode should not inject raw knowledge: %s", ragPrompt)
+	}
+}
+
 func TestStartSkipsASRWhenListeningIsDisabled(t *testing.T) {
 	h := newHarness()
 	config := startConfig{
@@ -137,6 +219,209 @@ func TestExecuteSpeakSkipsTTSWhenSpeakingIsDisabled(t *testing.T) {
 	if len(history) != 1 || history[0].Role != "assistant" || history[0].Text != "这条文字仍然可以显示" {
 		t.Fatalf("disabled speech should keep text output without TTS: %+v", history)
 	}
+}
+
+func TestStoppingTurnClosesBlockedTTSRead(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		for {
+			if _, _, err := connection.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	profile := modelProfile{
+		Name:   "blocked-tts",
+		URL:    strings.Replace(server.URL, "http://", "ws://", 1),
+		APIKey: "mock-key",
+	}
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-blocked-tts"
+	h.cfg.SpeakingEnabled = true
+	h.cfg.Models = map[string]modelProfile{"speak": profile}
+	h.sessionGeneration = 1
+	turn := turnRequest{
+		ctx:             h.ctx,
+		sessionID:       h.cfg.SessionID,
+		generation:      h.sessionGeneration,
+		speakingEnabled: true,
+		speakProfile:    profile,
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- h.executeTurnAction(turn, brainAction{Type: "speak", Text: "等待 TTS"})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		h.ttsMu.Lock()
+		blocked := len(h.ttsSockets) > 0
+		h.ttsMu.Unlock()
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("TTS socket was not registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.stopInternal(false)
+
+	select {
+	case executed := <-done:
+		if executed {
+			t.Fatal("stopped turn must not report TTS completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop did not interrupt the blocked TTS read")
+	}
+	h.ttsMu.Lock()
+	remaining := len(h.ttsSockets)
+	h.ttsMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("stopped TTS socket must be unregistered, got %d", remaining)
+	}
+}
+
+func TestStoppingTurnCancelsTTSDial(t *testing.T) {
+	dialStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	profile := modelProfile{
+		Name:   "blocked-tts-dial",
+		URL:    strings.Replace(server.URL, "http://", "ws://", 1),
+		APIKey: "mock-key",
+	}
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	h := newHarness()
+	h.ctx = sessionCtx
+	h.cancel = sessionCancel
+	h.cfg.SessionID = "session-blocked-tts-dial"
+	h.cfg.SpeakingEnabled = true
+	h.cfg.Models = map[string]modelProfile{"speak": profile}
+	h.sessionGeneration = 1
+	turn := turnRequest{
+		ctx:             sessionCtx,
+		sessionID:       h.cfg.SessionID,
+		generation:      h.sessionGeneration,
+		speakingEnabled: true,
+		speakProfile:    profile,
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- h.executeTurnAction(turn, brainAction{Type: "speak", Text: "等待握手"})
+	}()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("TTS dial did not reach the stalled handshake")
+	}
+
+	h.stopInternal(false)
+	select {
+	case executed := <-done:
+		if executed {
+			t.Fatal("stopped turn must not report TTS dial completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop did not cancel the blocked TTS dial")
+	}
+}
+
+func TestASRReconnectUsesCancellableContext(t *testing.T) {
+	dialStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	profile := modelProfile{
+		Name:   "blocked-asr-dial",
+		URL:    strings.Replace(server.URL, "http://", "ws://", 1),
+		APIKey: "mock-key",
+	}
+	dialContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := newHarness()
+	done := make(chan struct{})
+	go func() {
+		h.reconnectASR(dialContext, profile, "zh-CN", 2, "session-asr-reconnect")
+		close(done)
+	}()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("ASR reconnect did not reach the stalled handshake")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ASR reconnect did not stop after context cancellation")
+	}
+}
+
+func TestASRCloseSessionDoesNotWaitForWriter(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		for {
+			if _, _, err := connection.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	socket, err := dialRealtime(modelProfile{
+		Name:   "asr-close-order",
+		URL:    strings.Replace(server.URL, "http://", "ws://", 1),
+		APIKey: "mock-key",
+	}, defaultListenURL)
+	if err != nil {
+		t.Fatalf("failed to establish ASR test socket: %v", err)
+	}
+	defer socket.close()
+
+	client := &asrClient{socket: socket}
+	// Model an in-flight WriteJSON that is holding the socket writer. Closing
+	// the transport must still complete immediately instead of waiting for it.
+	socket.write.Lock()
+	done := make(chan struct{})
+	go func() {
+		client.closeSession()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		socket.write.Unlock()
+		t.Fatal("ASR closeSession waited for an in-flight writer")
+	}
+	socket.write.Unlock()
 }
 
 func TestValidateStartConfigRejectsIncompleteAndInvalidModelProfiles(t *testing.T) {

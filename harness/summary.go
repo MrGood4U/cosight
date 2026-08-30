@@ -232,6 +232,19 @@ func (h *harness) finishConversationSummary(sessionID string, generation, covere
 
 func (h *harness) clearConversationContext() {
 	h.mu.Lock()
+	oldGeneration := h.sessionGeneration
+	h.sessionGeneration++
+	generation := h.sessionGeneration
+	client := h.asr
+	h.asr = nil
+	listeningEnabled := h.cfg.ListeningEnabled
+	listenProfile := h.cfg.Models["listen"]
+	language := roleListeningLanguage(h.cfg.Role)
+	sessionID := h.cfg.SessionID
+	previousReconnectCancel := h.asrReconnectCancel
+	h.asrReconnectCancel = nil
+	turnCancels := h.turnCancels
+	h.turnCancels = make(map[string]context.CancelFunc)
 	h.history = nil
 	h.historyRevision = 0
 	h.conversationSummary = emptyConversationSummary()
@@ -239,8 +252,27 @@ func (h *harness) clearConversationContext() {
 	h.summaryGeneration++
 	h.summaryInFlight = false
 	h.summaryInFlightGeneration = h.summaryGeneration
-	sessionID := h.cfg.SessionID
+	var reconnectCtx context.Context
+	var reconnectCancel context.CancelFunc
+	if listeningEnabled && sessionID != "" && h.ctx != nil {
+		reconnectCtx, reconnectCancel = context.WithCancel(h.ctx)
+		h.asrReconnectCancel = reconnectCancel
+		h.asrReconnectGeneration = generation
+	}
 	h.mu.Unlock()
+	for _, cancelTurn := range turnCancels {
+		cancelTurn()
+	}
+	if previousReconnectCancel != nil {
+		previousReconnectCancel()
+	}
+	if client != nil {
+		client.closeSession()
+	}
+	h.closeTTSSocketsThrough(oldGeneration)
+	if reconnectCancel != nil {
+		go h.reconnectASR(reconnectCtx, listenProfile, language, generation, sessionID)
+	}
 	emitLog("conversation.context.cleared", map[string]any{"sessionId": sessionID})
 	emit(map[string]any{"type": "conversation.context.cleared", "sessionId": sessionID})
 }

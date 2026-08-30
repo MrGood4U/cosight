@@ -43,6 +43,10 @@
       "electron/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "electron/knowledge-store.mjs",
+      "electron/knowledge-search-worker.mjs"
+    ],
     "extraResources": [
       {
         "from": "build/python",

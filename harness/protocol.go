@@ -26,6 +26,7 @@ type startConfig struct {
 	RecentConversationCount int                     `json:"recentConversationCount"`
 	RecentVisionCount       int                     `json:"recentVisionCount"`
 	ConversationSummary     conversationSummary     `json:"conversationSummary"`
+	KnowledgeMode           string                  `json:"knowledgeMode"`
 	InitiativeEnabled       bool                    `json:"initiativeEnabled"`
 	ListeningEnabled        bool                    `json:"listeningEnabled"`
 	SpeakingEnabled         bool                    `json:"speakingEnabled"`
@@ -34,17 +35,20 @@ type startConfig struct {
 }
 
 type inputCommand struct {
-	Type          string          `json:"type"`
-	Data          string          `json:"data"`
-	Mode          string          `json:"mode"`
-	RequestID     string          `json:"requestId"`
-	SessionID     string          `json:"sessionId"`
-	ActionID      string          `json:"actionId"`
-	OK            bool            `json:"ok"`
-	Result        json.RawMessage `json:"result"`
-	Error         any             `json:"error"`
-	Config        json.RawMessage `json:"config"`
-	ScreenSharing *bool           `json:"screenSharing"`
+	Type             string           `json:"type"`
+	Data             string           `json:"data"`
+	Mode             string           `json:"mode"`
+	RequestID        string           `json:"requestId"`
+	SessionID        string           `json:"sessionId"`
+	ActionID         string           `json:"actionId"`
+	OK               bool             `json:"ok"`
+	Result           json.RawMessage  `json:"result"`
+	Error            any              `json:"error"`
+	Config           json.RawMessage  `json:"config"`
+	ScreenSharing    *bool            `json:"screenSharing"`
+	KnowledgeEventID string           `json:"eventId"`
+	KnowledgeMatches []map[string]any `json:"matches"`
+	KnowledgeStatus  string           `json:"status"`
 }
 
 type signal struct {

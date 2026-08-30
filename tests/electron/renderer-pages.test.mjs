@@ -11,6 +11,7 @@ let ModelsPage
 let RoleEditor
 let SettingsPage
 let ChatPage
+let EmbeddingPage
 
 const t = (key) => key
 const noop = () => {}
@@ -26,6 +27,7 @@ before(async () => {
   ;({ RoleEditor } = await viteServer.ssrLoadModule('/src/components/RolesPage.jsx'))
   ;({ SettingsPage } = await viteServer.ssrLoadModule('/src/components/SettingsPage.jsx'))
   ;({ ChatPage } = await viteServer.ssrLoadModule('/src/components/ChatPage.jsx'))
+  ;({ EmbeddingPage } = await viteServer.ssrLoadModule('/src/components/EmbeddingPage.jsx'))
 })
 
 after(async () => {
@@ -112,6 +114,71 @@ test('Role editor renders independent languages and conditional visual/drawing/i
   ]) assert.match(markup, new RegExp(field.replace('.', '\\.'), 'u'))
   assert.match(markup, /id="screen-vision-interval-hint"/)
   assert.match(markup, /id="screen-vision-threshold-hint"/)
+})
+
+test('Role editor exposes selectable Prompt and RAG knowledge modes', () => {
+  const markup = renderToStaticMarkup(React.createElement(RoleEditor, {
+    draft: { ...emptyRoleDraft(), name: 'RAG role', knowledgeMode: 'rag' },
+    embeddingModels: [{ id: 'embed-1', alias: 'Cloud embed', name: 'Qwen embed', model: 'text-embedding-v4' }],
+    setDraft: noop,
+    onSave: noop,
+    onCancel: noop,
+    onPreview: noop,
+    t,
+    setNotice: noop,
+  }))
+  assert.match(markup, /roles\.knowledgeMode/)
+  assert.match(markup, /roles\.knowledgeRagMode/)
+  assert.match(markup, /embed-1/)
+  assert.match(markup, /knowledge-rag-note/)
+})
+
+test('Role editor distinguishes partial knowledge indexing and exposes reindex action', () => {
+  const markup = renderToStaticMarkup(React.createElement(RoleEditor, {
+    draft: {
+      ...emptyRoleDraft(),
+      id: 'rag-role',
+      name: 'RAG role',
+      knowledgeMode: 'rag',
+      knowledgeStatus: { status: 'ready_with_errors', chunkCount: 4, error: 'manual.pdf：无法解析文件' },
+    },
+    embeddingModels: [{ id: 'embed-1', alias: 'Cloud embed', name: 'Qwen embed', model: 'text-embedding-v4' }],
+    onReindex: noop,
+    setDraft: noop,
+    onSave: noop,
+    onCancel: noop,
+    onPreview: noop,
+    t,
+    setNotice: noop,
+  }))
+  assert.match(markup, /roles\.knowledgePartialReady/)
+  assert.doesNotMatch(markup, /roles\.knowledgeReady/)
+  assert.match(markup, /manual\.pdf：无法解析文件/)
+  assert.match(markup, /roles\.knowledgeReindex/)
+})
+
+test('Embedding page renders cloud/local entry points and configured model cards', () => {
+  const markup = renderToStaticMarkup(React.createElement(EmbeddingPage, {
+    models: [{ id: 'embed-1', type: 'local', alias: 'Local test', name: 'Local service', model: 'qwen-embed', url: 'http://127.0.0.1:8080/v1', dimensions: 1024, hasApiKey: false }],
+    editorOpen: false,
+    draft: {},
+    setDraft: noop,
+    apiKeyVisible: false,
+    setApiKeyVisible: noop,
+    testState: 'idle',
+    testResult: null,
+    openNew: noop,
+    openEdit: noop,
+    save: noop,
+    remove: noop,
+    test: noop,
+    closeEditor: noop,
+    t,
+  }))
+  assert.match(markup, /embeddings\.addCloud/)
+  assert.match(markup, /embeddings\.addLocal/)
+  assert.match(markup, /Local test/)
+  assert.match(markup, /qwen-embed/)
 })
 
 test('Settings page exposes system audio separately from output and connection settings', () => {

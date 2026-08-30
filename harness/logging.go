@@ -61,6 +61,9 @@ func appendErrorLog(kind string, fields map[string]any) {
 }
 
 func appendLog(level, kind string, fields map[string]any) {
+	if !shouldOutputLog(level) {
+		return
+	}
 	logPath := strings.TrimSpace(os.Getenv("COSIGHT_DEBUG_LOG"))
 	if logPath == "" {
 		return
@@ -98,6 +101,9 @@ func durationMS(start time.Time) int64 {
 
 func emitLog(message string, fields map[string]any) {
 	level := logLevelForMessage(message)
+	if !shouldOutputLog(level) {
+		return
+	}
 	payload := map[string]any{"type": "harness.log", "level": level, "message": message}
 	for key, value := range fields {
 		payload[key] = value
@@ -110,6 +116,9 @@ func emitLog(message string, fields map[string]any) {
 // runtime event. It is also forwarded through stdout so Electron can put the
 // same structured entry in its own log.
 func emitDebugLog(message string, fields map[string]any) {
+	if !shouldOutputLog(logLevelDebug) {
+		return
+	}
 	payload := map[string]any{"type": "harness.log", "level": logLevelDebug, "message": message}
 	for key, value := range fields {
 		payload[key] = value
@@ -126,6 +135,19 @@ func logLevelForMessage(message string) string {
 		}
 	}
 	return logLevelInfo
+}
+
+func configuredOutputLogLevel() string {
+	level := strings.ToUpper(strings.TrimSpace(os.Getenv("COSIGHT_LOG_LEVEL")))
+	if level == logLevelDebug || level == logLevelInfo || level == logLevelError {
+		return level
+	}
+	return logLevelDebug
+}
+
+func shouldOutputLog(level string) bool {
+	ranks := map[string]int{logLevelDebug: 10, logLevelInfo: 20, logLevelError: 30}
+	return ranks[level] >= ranks[configuredOutputLogLevel()]
 }
 
 func emitSignal(s signal) {

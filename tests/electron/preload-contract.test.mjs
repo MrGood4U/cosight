@@ -37,12 +37,13 @@ async function loadPreload() {
 test('preload exposes all renderer IPC capabilities with stable method names', async () => {
   const { api } = await loadPreload()
   const expected = [
-    'getSettings', 'getUsage', 'pickRoleKnowledgeFiles', 'pickRoleAvatar', 'previewRolePrompt', 'saveRole', 'selectRole', 'deleteRole',
+    'getSettings', 'getUsage', 'pickRoleKnowledgeFiles', 'pickRoleAvatar', 'previewRolePrompt', 'saveRole', 'reindexRoleKnowledge', 'selectRole', 'deleteRole',
     'saveModel', 'selectModel', 'deleteModel', 'setModelMode', 'saveHarnessModel', 'deleteHarnessModel', 'saveHarnessSettings',
+    'saveEmbeddingModel', 'deleteEmbeddingModel', 'testEmbeddingModel',
     'listDesktopSources', 'exportSession', 'importSession', 'prepareDesktopSource', 'startSystemAudioCapture', 'stopSystemAudioCapture',
     'setSystemAudioMuted', 'setSystemAudioListeningEnabled', 'startSession', 'stopSession', 'updateSessionCapabilities', 'triggerInitiative',
     'sendAudioChunk', 'sendTextMessage', 'clearConversationContext', 'sendVideoFrame', 'sendToolResult', 'sendHarnessActionResult',
-    'showOverlay', 'hideOverlay', 'drawOnOverlay', 'showCaptionOnOverlay', 'reportRendererEvent', 'reportRendererError', 'onQwenEvent',
+    'showOverlay', 'hideOverlay', 'drawOnOverlay', 'showCaptionOnOverlay', 'reportRendererEvent', 'reportRendererError', 'onQwenEvent', 'onKnowledgeStatus',
   ]
   assert.deepEqual(Object.keys(api).sort(), expected.sort())
   for (const key of expected) assert.equal(typeof api[key], 'function', `${key} should be callable`)

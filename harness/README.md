@@ -43,7 +43,10 @@ comparison metrics, state flags, and request IDs; they do not contain the
 image data or API keys.
 
 Every diagnostic entry has a `level`: normal runtime events are `INFO`, failures
-are `ERROR`, and detailed diagnostics are `DEBUG`. `performance.latency.summary`
+are `ERROR`, and detailed diagnostics are `DEBUG`. The current output threshold
+is `DEBUG`, so all three levels are written; setting `COSIGHT_LOG_LEVEL` to
+`INFO` or `ERROR` can reduce future output without changing the entry labels.
+`performance.latency.summary`
 is emitted periodically and when the session stops. It contains `brain`, `see`,
 and `speak` aggregates with `sampleCount`, `averageMs`, `maxMs`, `p50Ms`, and
 `p95Ms`; the measured stage is the model or realtime request, not the complete

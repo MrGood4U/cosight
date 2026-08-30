@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -227,6 +228,213 @@ func TestRecentHistoryUsesConfiguredConversationCount(t *testing.T) {
 	}
 	if recent[0].Text != "d" || recent[1].Text != "e" {
 		t.Fatalf("expected the newest two messages, got %+v", recent)
+	}
+}
+
+func TestSnapshotTurnCapturesHistoryAtQueueTime(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-turn-snapshot"
+	h.cfg.RecentConversationCount = 3
+	h.sessionGeneration = 4
+	h.history = []conversationMessage{
+		{Role: "user", Text: "before"},
+		{Role: "assistant", Text: "current context"},
+	}
+
+	turn, ok := h.snapshotTurn(signal{EventID: "listen-snapshot"}, listenPayload{Text: "current input"}, "")
+	if !ok {
+		t.Fatal("expected an active session turn snapshot")
+	}
+	h.appendHistory("user", "arrived after queueing")
+
+	if turn.generation != 4 || turn.sessionID != "session-turn-snapshot" {
+		t.Fatalf("turn was not bound to the queued session: %+v", turn)
+	}
+	if len(turn.recentTurns) != 2 || turn.recentTurns[0].Text != "before" || turn.recentTurns[1].Text != "current context" {
+		t.Fatalf("turn history changed after queueing: %+v", turn.recentTurns)
+	}
+}
+
+func TestContextClearInvalidatesQueuedTurnGeneration(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-generation"
+	h.sessionGeneration = 2
+
+	turn, ok := h.snapshotTurn(signal{EventID: "listen-generation"}, listenPayload{Text: "hello"}, "")
+	if !ok {
+		t.Fatal("expected an active session turn snapshot")
+	}
+	h.clearConversationContext()
+	if h.isTurnCurrent(turn) {
+		t.Fatal("context clear must invalidate queued turns")
+	}
+}
+
+func TestContextClearCancelsQueuedTurnContext(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-cancel-turn"
+	h.sessionGeneration = 3
+
+	turn, ok := h.snapshotTurn(signal{EventID: "listen-cancel-turn"}, listenPayload{Text: "hello"}, "")
+	if !ok {
+		t.Fatal("expected an active session turn snapshot")
+	}
+	cancelled := make(chan struct{})
+	go func() {
+		<-turn.ctx.Done()
+		close(cancelled)
+	}()
+
+	h.clearConversationContext()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("context.clear must cancel the queued turn context")
+	}
+}
+
+func TestStaleASRClientCannotCreateNewHistory(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-current"
+	h.sessionGeneration = 8
+	current := &asrClient{sessionID: "session-current", generation: 8}
+	stale := &asrClient{sessionID: "session-old", generation: 7}
+	h.asr = current
+
+	h.handleASREventFrom(stale, map[string]any{
+		"type":       "conversation.item.input_audio_transcription.completed",
+		"item_id":    "stale-item",
+		"transcript": "旧连接的语音",
+	})
+	if len(h.history) != 0 {
+		t.Fatalf("stale ASR callback must not append history: %+v", h.history)
+	}
+}
+
+func TestSnapshotTurnRejectsAfterSessionStop(t *testing.T) {
+	h := newHarness()
+	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.cfg.SessionID = "session-stopped"
+	h.sessionGeneration = 5
+
+	h.stopInternal(false)
+	if h.ctx != nil {
+		t.Fatal("stopped session must clear its context")
+	}
+	if _, ok := h.snapshotTurn(signal{EventID: "listen-after-stop"}, listenPayload{Text: "late input"}, ""); ok {
+		t.Fatal("stopped session must reject new turn snapshots")
+	}
+}
+
+func TestStaleTurnCannotExecuteActionSideEffects(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-action-generation"
+	h.sessionGeneration = 1
+	turn := turnRequest{
+		sessionID:       h.cfg.SessionID,
+		generation:      h.sessionGeneration,
+		speakingEnabled: false,
+	}
+
+	h.sessionGeneration++
+	if h.executeTurnAction(turn, brainAction{Type: "speak", Text: "stale response"}) {
+		t.Fatal("stale turn must not execute an action")
+	}
+	if len(h.history) != 0 {
+		t.Fatalf("stale turn must not append history: %+v", h.history)
+	}
+}
+
+func TestStoppingTurnSuppressesPendingDrawCompletion(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-draw-generation"
+	h.cfg.DrawingEnabled = true
+	h.sessionGeneration = 1
+	turn := turnRequest{
+		sessionID:      h.cfg.SessionID,
+		generation:     h.sessionGeneration,
+		drawingEnabled: true,
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- h.executeTurnAction(turn, brainAction{Type: "draw", ActionID: "draw-stale"})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		h.actionMu.Lock()
+		_, pending := h.pendingActions["draw-stale"]
+		h.actionMu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("draw action was not registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.stopInternal(false)
+
+	select {
+	case executed := <-done:
+		if executed {
+			t.Fatal("stopped turn must not report draw completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stopped draw action did not unwind")
+	}
+	h.actionMu.Lock()
+	_, pending := h.pendingActions["draw-stale"]
+	h.actionMu.Unlock()
+	if pending {
+		t.Fatal("stopped draw action must be removed from pending actions")
+	}
+}
+
+func TestContextClearUnblocksPendingDrawImmediately(t *testing.T) {
+	h := newHarness()
+	h.ctx = context.Background()
+	h.cfg.SessionID = "session-clear-draw"
+	h.cfg.DrawingEnabled = true
+	h.sessionGeneration = 1
+	turn, ok := h.snapshotTurn(signal{EventID: "listen-clear-draw"}, listenPayload{Text: "draw it"}, "")
+	if !ok {
+		t.Fatal("expected an active session turn snapshot")
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- h.executeTurnAction(turn, brainAction{Type: "draw", ActionID: "draw-clear"})
+	}()
+	waitForCondition(t, "draw action to become pending", func() bool {
+		h.actionMu.Lock()
+		defer h.actionMu.Unlock()
+		_, pending := h.pendingActions["draw-clear"]
+		return pending
+	})
+
+	startedAt := time.Now()
+	h.clearConversationContext()
+	select {
+	case executed := <-done:
+		if executed {
+			t.Fatal("context.clear must suppress the cancelled draw")
+		}
+		if elapsed := time.Since(startedAt); elapsed >= drawResultTimeout {
+			t.Fatalf("context.clear should unblock draw before its timeout, took %s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context.clear did not unblock the pending draw")
+	}
+	h.actionMu.Lock()
+	defer h.actionMu.Unlock()
+	if _, pending := h.pendingActions["draw-clear"]; pending {
+		t.Fatal("cancelled draw action must be removed from pending actions")
 	}
 }
 

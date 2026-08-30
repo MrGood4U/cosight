@@ -7,7 +7,22 @@ import (
 )
 
 func (h *harness) handleASREvent(event map[string]any) {
+	h.handleASREventFrom(nil, event)
+}
+
+func (h *harness) handleASREventFrom(client *asrClient, event map[string]any) {
 	eventType, _ := event["type"].(string)
+	// session.updated is consumed by newASRClient before h.asr is installed;
+	// all user-facing events must wait until the client is the active one.
+	if client != nil && eventType != "session.updated" && !h.isCurrentASRClient(client) {
+		emitLog("listen.event.ignored", map[string]any{
+			"reason":     "stale_asr_client",
+			"model":      client.model,
+			"sessionId":  client.sessionID,
+			"generation": client.generation,
+		})
+		return
+	}
 	switch eventType {
 	case "input_audio_buffer.speech_started":
 		h.stateMu.Lock()
@@ -35,7 +50,7 @@ func (h *harness) handleASREvent(event map[string]any) {
 		speechStartedAt := h.speechStartedAt
 		h.speechStartedAt = time.Time{}
 		h.stateMu.Unlock()
-		h.emitListenCompleted(text, stringValue(event["item_id"], ""), "asr", speechStartedAt)
+		h.emitListenCompletedFrom(client, text, stringValue(event["item_id"], ""), "asr", speechStartedAt)
 	case "error":
 		message := "ASR Realtime 返回错误"
 		if raw, ok := event["error"].(map[string]any); ok {
@@ -52,6 +67,10 @@ func (h *harness) handleASREvent(event map[string]any) {
 }
 
 func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, speechStartedAt time.Time) {
+	h.emitListenCompletedFrom(nil, text, utteranceID, inputSource, speechStartedAt)
+}
+
+func (h *harness) emitListenCompletedFrom(client *asrClient, text, utteranceID, inputSource string, speechStartedAt time.Time) {
 	text = truncate(strings.TrimSpace(text), maxTextLength)
 	if text == "" {
 		emitLog("listen.completed.empty", map[string]any{"source": inputSource})
@@ -60,17 +79,49 @@ func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, spe
 	if utteranceID == "" {
 		utteranceID = newID("utt")
 	}
+	h.mu.Lock()
+	if client != nil && !h.isCurrentASRClientLocked(client) {
+		h.mu.Unlock()
+		emitLog("listen.completed.ignored", map[string]any{
+			"reason":     "stale_asr_client",
+			"model":      client.model,
+			"sessionId":  client.sessionID,
+			"generation": client.generation,
+		})
+		return
+	}
+	language := roleListeningLanguage(h.cfg.Role)
+	sessionID := h.cfg.SessionID
+	listenProfile := h.cfg.Models["listen"]
+	generation := h.sessionGeneration
+	h.mu.Unlock()
 	payload := listenPayload{
 		UtteranceID: utteranceID,
 		Text:        text,
-		Language:    roleListeningLanguage(h.cfg.Role),
+		Language:    language,
 		IsFinal:     true,
 		EndedAt:     nowString(),
 	}
 	s := signal{
 		Schema: protocolSchema, Version: protocolVersion, Type: "listen.completed",
-		EventID: newID("evt_listen"), SessionID: h.cfg.SessionID,
-		CreatedAt: nowString(), Source: sourceFor("listen", h.cfg.Models["listen"]), Payload: payload,
+		EventID: newID("evt_listen"), SessionID: sessionID,
+		CreatedAt: nowString(), Source: sourceFor("listen", listenProfile), Payload: payload,
+	}
+	if client != nil {
+		if !h.appendHistoryForASRClient(client, generation, payload.Text) {
+			emitLog("listen.completed.ignored", map[string]any{
+				"reason":     "stale_asr_client",
+				"model":      client.model,
+				"sessionId":  client.sessionID,
+				"generation": client.generation,
+			})
+			return
+		}
+	} else {
+		h.appendHistory("user", payload.Text)
+	}
+	if client != nil && !h.isCurrentASRClient(client) {
+		return
 	}
 	listenFields := map[string]any{
 		"eventId":         s.EventID,
@@ -84,7 +135,7 @@ func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, spe
 	emitLog("listen.completed", listenFields)
 	emitSignal(s)
 	emitDebugLog("conversation.content", map[string]any{
-		"sessionId":   h.cfg.SessionID,
+		"sessionId":   sessionID,
 		"role":        "user",
 		"source":      inputSource,
 		"eventId":     s.EventID,
@@ -92,8 +143,43 @@ func (h *harness) emitListenCompleted(text, utteranceID, inputSource string, spe
 		"text":        payload.Text,
 	})
 	emit(map[string]any{"type": "user.transcript", "text": payload.Text})
-	h.appendHistory("user", payload.Text)
-	go h.handleCompletedListen(s, payload, "")
+	if client != nil {
+		h.enqueueTurnFromASR(client, generation, s, payload, "")
+		return
+	}
+	h.enqueueTurn(s, payload, "")
+}
+
+func (h *harness) isCurrentASRClient(client *asrClient) bool {
+	if client == nil {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.isCurrentASRClientLocked(client)
+}
+
+func (h *harness) isCurrentASRClientLocked(client *asrClient) bool {
+	return client != nil && h.asr == client && h.ctx != nil && h.cfg.SessionID == client.sessionID && h.sessionGeneration == client.generation
+}
+
+func (h *harness) appendHistoryForASRClient(client *asrClient, generation uint64, text string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if client == nil || h.asr != client || h.ctx == nil || h.cfg.SessionID != client.sessionID || h.sessionGeneration != generation || client.generation != generation {
+		return false
+	}
+	h.historyRevision++
+	h.history = append(h.history, conversationMessage{
+		Role:      "user",
+		Text:      truncate(text, maxTextLength),
+		CreatedAt: nowString(),
+		Revision:  h.historyRevision,
+	})
+	if len(h.history) > maxStoredMessages {
+		h.history = h.history[len(h.history)-maxStoredMessages:]
+	}
+	return true
 }
 
 func (h *harness) handleTextInput(text string) {
@@ -138,6 +224,29 @@ func (h *harness) appendHistory(role, text string) {
 	if len(h.history) > maxStoredMessages {
 		h.history = h.history[len(h.history)-maxStoredMessages:]
 	}
+}
+
+func (h *harness) appendHistoryForTurnIfCurrent(turn *turnRequest, role, text string) bool {
+	if turn == nil {
+		h.appendHistory(role, text)
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessionGeneration != turn.generation || h.cfg.SessionID != turn.sessionID {
+		return false
+	}
+	h.historyRevision++
+	h.history = append(h.history, conversationMessage{
+		Role:      role,
+		Text:      truncate(text, maxTextLength),
+		CreatedAt: nowString(),
+		Revision:  h.historyRevision,
+	})
+	if len(h.history) > maxStoredMessages {
+		h.history = h.history[len(h.history)-maxStoredMessages:]
+	}
+	return true
 }
 
 func importedHistory(value any) []conversationMessage {

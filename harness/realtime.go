@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -71,11 +73,16 @@ func bearerHeaders(apiKey string) http.Header {
 }
 
 type realtimeSocket struct {
-	conn  *websocket.Conn
-	write sync.Mutex
+	conn      *websocket.Conn
+	write     sync.Mutex
+	closeOnce sync.Once
 }
 
 func dialRealtime(profile modelProfile, fallback string) (*realtimeSocket, error) {
+	return dialRealtimeContext(context.Background(), profile, fallback)
+}
+
+func dialRealtimeContext(ctx context.Context, profile modelProfile, fallback string) (*realtimeSocket, error) {
 	if strings.TrimSpace(profile.APIKey) == "" {
 		return nil, fmt.Errorf("模型 %q 缺少 API Key", profile.Name)
 	}
@@ -83,7 +90,35 @@ func dialRealtime(profile modelProfile, fallback string) (*realtimeSocket, error
 	if err != nil {
 		return nil, err
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(endpoint, bearerHeaders(profile.APIKey))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	dialer := *websocket.DefaultDialer
+	dialWatchers := make([]chan struct{}, 0, 1)
+	dialer.NetDialContext = func(connectCtx context.Context, network, address string) (net.Conn, error) {
+		connection, err := (&net.Dialer{}).DialContext(connectCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		done := make(chan struct{})
+		dialWatchers = append(dialWatchers, done)
+		go func() {
+			select {
+			case <-dialCtx.Done():
+				_ = connection.Close()
+			case <-done:
+			}
+		}()
+		return connection, nil
+	}
+	defer func() {
+		for _, done := range dialWatchers {
+			close(done)
+		}
+	}()
+	conn, _, err := dialer.DialContext(dialCtx, endpoint, bearerHeaders(profile.APIKey))
 	if err != nil {
 		return nil, err
 	}
@@ -100,24 +135,31 @@ func (s *realtimeSocket) close() {
 	if s == nil || s.conn == nil {
 		return
 	}
-	_ = s.conn.Close()
+	s.closeOnce.Do(func() {
+		_ = s.conn.Close()
+	})
 }
 
 type asrClient struct {
-	socket   *realtimeSocket
-	ready    chan error
-	onEvent  func(map[string]any)
-	stopOnce sync.Once
-	model    string
+	socket     *realtimeSocket
+	ready      chan error
+	onEvent    func(*asrClient, map[string]any)
+	stopOnce   sync.Once
+	model      string
+	sessionID  string
+	generation uint64
 }
 
-func newASRClient(profile modelProfile, language string, onEvent func(map[string]any)) (*asrClient, error) {
+func newASRClient(ctx context.Context, profile modelProfile, language string, generation uint64, sessionID string, onEvent func(*asrClient, map[string]any)) (*asrClient, error) {
 	startedAt := time.Now()
 	emitLog("listen.connect.started", map[string]any{
 		"model":    profile.Name,
 		"language": language,
 	})
-	socket, err := dialRealtime(profile, defaultListenURL)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	socket, err := dialRealtimeContext(ctx, profile, defaultListenURL)
 	if err != nil {
 		emitLog("listen.connect.failed", map[string]any{
 			"model":      profile.Name,
@@ -126,7 +168,14 @@ func newASRClient(profile modelProfile, language string, onEvent func(map[string
 		})
 		return nil, err
 	}
-	client := &asrClient{socket: socket, ready: make(chan error, 1), onEvent: onEvent, model: profile.Name}
+	client := &asrClient{
+		socket:     socket,
+		ready:      make(chan error, 1),
+		onEvent:    onEvent,
+		model:      profile.Name,
+		sessionID:  sessionID,
+		generation: generation,
+	}
 	go client.readLoop()
 	transcription := map[string]any{}
 	if language != "" && language != "auto" {
@@ -184,6 +233,16 @@ func newASRClient(profile modelProfile, language string, onEvent func(map[string
 			"error":      err.Error(),
 		})
 		return nil, err
+	case <-ctx.Done():
+		client.closeSession()
+		err := ctx.Err()
+		emitLog("listen.connect.failed", map[string]any{
+			"model":      profile.Name,
+			"durationMs": durationMS(startedAt),
+			"stage":      "session.updated",
+			"error":      err.Error(),
+		})
+		return nil, err
 	}
 }
 
@@ -232,7 +291,7 @@ func (c *asrClient) readLoop() {
 			emitRealtimeUsage("listen", c.model, event)
 		}
 		if c.onEvent != nil {
-			c.onEvent(event)
+			c.onEvent(c, event)
 		}
 	}
 }
@@ -250,7 +309,49 @@ func (c *asrClient) appendAudio(data string) error {
 
 func (c *asrClient) closeSession() {
 	c.stopOnce.Do(func() {
-		_ = c.socket.send(map[string]any{"event_id": newID("event"), "type": "session.finish"})
+		// Closing the transport must not wait for an in-flight WriteJSON or
+		// acquire the socket write mutex. A session.finish notification is only
+		// best effort; stop/clear must be able to release blocked ASR resources.
 		c.socket.close()
 	})
+}
+
+func (h *harness) registerTTSSocket(socket *realtimeSocket, generation uint64, current func() bool) bool {
+	if socket == nil {
+		return false
+	}
+	h.ttsMu.Lock()
+	defer h.ttsMu.Unlock()
+	if current != nil && !current() {
+		return false
+	}
+	if h.ttsSockets == nil {
+		h.ttsSockets = make(map[*realtimeSocket]uint64)
+	}
+	h.ttsSockets[socket] = generation
+	return true
+}
+
+func (h *harness) unregisterTTSSocket(socket *realtimeSocket) {
+	if socket == nil {
+		return
+	}
+	h.ttsMu.Lock()
+	delete(h.ttsSockets, socket)
+	h.ttsMu.Unlock()
+}
+
+func (h *harness) closeTTSSocketsThrough(generation uint64) {
+	h.ttsMu.Lock()
+	var sockets []*realtimeSocket
+	for socket, socketGeneration := range h.ttsSockets {
+		if socketGeneration <= generation {
+			delete(h.ttsSockets, socket)
+			sockets = append(sockets, socket)
+		}
+	}
+	h.ttsMu.Unlock()
+	for _, socket := range sockets {
+		socket.close()
+	}
 }

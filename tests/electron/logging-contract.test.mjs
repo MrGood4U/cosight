@@ -11,11 +11,15 @@ const legacyBridgeSource = await readFile(new URL('../../python/qwen_bridge.py',
 
 test('all runtime loggers persist explicit INFO, ERROR, and DEBUG levels', () => {
   assert.match(electronSource, /const level = normalizeLogLevel\(requestedLevel\) \|\| inferredLogLevel\(kind\)/)
+  assert.match(electronSource, /const DEFAULT_OUTPUT_LOG_LEVEL = 'DEBUG'/)
+  assert.match(electronSource, /COSIGHT_LOG_LEVEL/)
+  assert.match(electronSource, /if \(!shouldOutputLog\(level\)\) return/)
   assert.match(electronSource, /JSON\.stringify\(\{ time: new Date\(\)\.toISOString\(\), level, kind, payload \}\)/)
   assert.match(harnessLoggingSource, /logLevelDebug = "DEBUG"/)
   assert.match(harnessLoggingSource, /logLevelInfo  = "INFO"/)
   assert.match(harnessLoggingSource, /logLevelError = "ERROR"/)
-  assert.match(legacyBridgeSource, /"level": _log_level\(kind, level\)/)
+  assert.match(legacyBridgeSource, /"level": output_level/)
+  assert.match(legacyBridgeSource, /return "INFO"/)
 })
 
 test('performance and conversation diagnostics remain DEBUG-only records', () => {

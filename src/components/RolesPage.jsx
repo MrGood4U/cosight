@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Check,
   ChevronDown,
+  Database,
   Eye,
   FileText,
   Languages,
@@ -57,9 +58,9 @@ export function RoleSelector({ roles, selectedRole, selectedRoleId, onSelect, on
   </div>
 }
 
-export function RolesPage({ roles, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, selectRole, deleteRole, isChatActive, t, setNotice }) {
+export function RolesPage({ roles, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft, embeddingModels, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, reindexRoleKnowledge, selectRole, deleteRole, isChatActive, t, setNotice }) {
   const [roleSearch, setRoleSearch] = useState('')
-  if (roleEditorOpen) return <RoleEditor draft={roleDraft} setDraft={setRoleDraft} onSave={saveRole} onCancel={closeRoleEditor} onPreview={previewRolePrompt} t={t} setNotice={setNotice} />
+  if (roleEditorOpen) return <RoleEditor draft={roleDraft} setDraft={setRoleDraft} embeddingModels={embeddingModels} onSave={saveRole} onReindex={reindexRoleKnowledge} onCancel={closeRoleEditor} onPreview={previewRolePrompt} t={t} setNotice={setNotice} />
   const normalizedSearch = roleSearch.trim().toLocaleLowerCase()
   const defaultRole = { id: '', name: t('roles.default'), identity: t('roles.defaultIdentity'), listeningLanguage: 'auto', outputLanguage: 'auto', voice: '', abilities: DEFAULT_ROLE_ABILITY_IDS, isDefault: true }
   const visibleRoles = roles.filter((role) => String(role.name || '').toLocaleLowerCase().includes(normalizedSearch))
@@ -110,9 +111,10 @@ function RoleLanguageField({ label, value, onChange, t }) {
   return <div className="role-field"><span>{label}</span><label className="select-field"><Languages size={15} /><select value={value} onChange={(event) => onChange(event.target.value)} aria-label={label}>{ROLE_LANGUAGE_OPTIONS.map((option) => <option value={option.value} key={option.value}>{t(option.labelKey)}</option>)}</select><span className="select-value">{t(selectedOption?.labelKey || 'roles.languageAuto')}</span><ChevronDown size={14} /></label></div>
 }
 
-export function RoleEditor({ draft, setDraft, onSave, onCancel, onPreview, t, setNotice }) {
+export function RoleEditor({ draft, setDraft, embeddingModels = [], onSave, onReindex, onCancel, onPreview, t, setNotice }) {
   const editorRef = useRef(null)
   const editorScrollTopRef = useRef(null)
+  const [reindexingKnowledge, setReindexingKnowledge] = useState(false)
   const roleListeningEnabled = draft.abilities.includes('listening')
   const roleSpeakingEnabled = draft.abilities.includes('speaking')
   const initiativeDependenciesMet = roleListeningEnabled && roleSpeakingEnabled
@@ -173,6 +175,19 @@ export function RoleEditor({ draft, setDraft, onSave, onCancel, onPreview, t, se
     setDraft((current) => ({ ...current, avatar: result.avatar, avatarName: result.name || '', avatarRemoved: false }))
   }
   const removeAvatar = () => setDraft((current) => ({ ...current, avatar: '', avatarName: '', avatarRemoved: true }))
+  const knowledgeStatus = draft.knowledgeStatus || {}
+  const knowledgePartiallyReady = knowledgeStatus.status === 'ready_with_errors'
+  const knowledgeIndexFailed = knowledgeStatus.status === 'error'
+  const canReindexKnowledge = Boolean(draft.id && onReindex && (knowledgePartiallyReady || knowledgeIndexFailed))
+  const retryKnowledgeIndex = async () => {
+    if (!canReindexKnowledge || reindexingKnowledge) return
+    setReindexingKnowledge(true)
+    try {
+      await onReindex(draft.id)
+    } finally {
+      setReindexingKnowledge(false)
+    }
+  }
   return <section ref={editorRef} className="roles-page role-editor-page" aria-labelledby="role-editor-title">
     <div className="role-editor-header"><div><button type="button" className="back-link" onClick={onCancel}><ChevronDown size={15} className="back-icon" />{t('roles.back')}</button><span className="page-kicker">{t('roles.kicker')}</span><h1 id="role-editor-title">{draft.id ? t('roles.editTitle') : t('roles.addTitle')}</h1><p>{t('roles.editorDescription')}</p></div></div>
     <div className="role-editor-form">
@@ -200,7 +215,7 @@ export function RoleEditor({ draft, setDraft, onSave, onCancel, onPreview, t, se
       {draft.abilities.includes('screenVision') && <div className="initiative-fields screen-vision-fields"><label className="role-field"><span>{t('roles.screenVisionInterval')}</span><div className="initiative-number-field"><input className="text-input" type="text" inputMode="numeric" pattern="[0-9]*" value={draft.screenVisionIntervalSec} onChange={(event) => updateDraft('screenVisionIntervalSec', event.target.value.replace(/\D/g, '').slice(0, 2))} onBlur={() => { const value = Number.parseInt(draft.screenVisionIntervalSec || '5', 10); updateDraft('screenVisionIntervalSec', String(Math.min(60, Math.max(1, Number.isFinite(value) ? value : 5)))) }} aria-describedby="screen-vision-interval-hint" /><span>s</span></div><small id="screen-vision-interval-hint">{t('roles.screenVisionIntervalHint')}</small></label><label className="role-field"><span>{t('roles.screenVisionChangeThreshold')}</span><div className="initiative-number-field"><input className="text-input" type="text" inputMode="numeric" pattern="[0-9]*" value={draft.screenVisionChangeThreshold} onChange={(event) => updateDraft('screenVisionChangeThreshold', event.target.value.replace(/\D/g, '').slice(0, 3))} onBlur={() => { const value = Number.parseInt(draft.screenVisionChangeThreshold || '8', 10); updateDraft('screenVisionChangeThreshold', String(Math.min(100, Math.max(1, Number.isFinite(value) ? value : 8)))) }} aria-describedby="screen-vision-threshold-hint" /><span>%</span></div><small id="screen-vision-threshold-hint">{t('roles.screenVisionChangeThresholdHint')}</small></label></div>}
       {draft.abilities.includes('drawing') && <label className="role-field ability-policy-field"><span>{t('roles.drawingPolicy')}</span><small>{t('roles.drawingPolicyHint')}</small><textarea className="role-textarea" value={draft.drawingPolicy} onChange={(event) => updateDraft('drawingPolicy', event.target.value)} placeholder={t('roles.drawingPolicyPlaceholder')} maxLength={20000} /></label>}
       {draft.abilities.includes('initiative') && initiativeDependenciesMet && <div className="initiative-fields"><label className="role-field"><span>{t('roles.initiativeTimeout')}</span><div className="initiative-number-field"><input className="text-input" type="text" inputMode="numeric" pattern="[0-9]*" value={draft.initiativeTimeoutSec} onChange={(event) => updateDraft('initiativeTimeoutSec', event.target.value.replace(/\D/g, '').slice(0, 3))} onBlur={() => { const value = Number.parseInt(draft.initiativeTimeoutSec || '10', 10); updateDraft('initiativeTimeoutSec', String(Math.min(300, Math.max(5, Number.isFinite(value) ? value : 10)))) }} aria-describedby="initiative-timeout-hint" /><span>s</span></div><small id="initiative-timeout-hint">{t('roles.initiativeTimeoutHint')}</small></label><label className="role-field"><span>{t('roles.initiativePrompt')}</span><textarea className="role-textarea initiative-prompt-textarea" value={draft.initiativePrompt} onChange={(event) => updateDraft('initiativePrompt', event.target.value)} placeholder={t('roles.initiativePromptPlaceholder')} maxLength={20000} /><small>{t('roles.initiativePromptHint')}</small></label></div>}
-      <div className="role-field knowledge-field"><span>{t('roles.knowledge')}</span><small>{t('roles.knowledgeHint')}</small><textarea className="role-textarea knowledge-textarea" value={draft.knowledgeText} onChange={(event) => updateDraft('knowledgeText', event.target.value)} placeholder={t('roles.knowledgePlaceholder')} maxLength={60000} />
+      <div className="role-field knowledge-field"><span>{t('roles.knowledge')}</span><small>{t('roles.knowledgeHint')}</small><div className="knowledge-mode-grid"><label className="role-field"><span>{t('roles.knowledgeMode')}</span><label className="select-field"><Database size={15} /><select value={draft.knowledgeMode || 'prompt'} onChange={(event) => updateDraft('knowledgeMode', event.target.value)} aria-label={t('roles.knowledgeMode')}><option value="prompt">{t('roles.knowledgePromptMode')}</option><option value="rag">{t('roles.knowledgeRagMode')}</option></select><span className="select-value">{draft.knowledgeMode === 'rag' ? t('roles.knowledgeRagMode') : t('roles.knowledgePromptMode')}</span><ChevronDown size={14} /></label></label>{draft.knowledgeMode === 'rag' && <label className="role-field"><span>{t('roles.embeddingModel')}</span><label className="select-field"><Database size={15} /><select value={draft.embeddingModelId || ''} onChange={(event) => updateDraft('embeddingModelId', event.target.value)} aria-label={t('roles.embeddingModel')}><option value="">{t('roles.embeddingModelPlaceholder')}</option>{embeddingModels.map((model) => <option value={model.id} key={model.id}>{model.alias || model.name} · {model.model}</option>)}</select><span className="select-value">{embeddingModels.find((model) => model.id === draft.embeddingModelId)?.alias || embeddingModels.find((model) => model.id === draft.embeddingModelId)?.name || t('roles.embeddingModelPlaceholder')}</span><ChevronDown size={14} /></label></label>}</div>{draft.knowledgeMode === 'rag' && <div className={`knowledge-rag-note ${knowledgePartiallyReady ? 'partial' : knowledgeIndexFailed ? 'failed' : ''}`}>{embeddingModels.length ? <>{t('roles.knowledgeRagHint')} {knowledgeStatus.status === 'indexing' ? <strong>{t('roles.knowledgeIndexing')}</strong> : knowledgePartiallyReady ? <strong>{t('roles.knowledgePartialReady', { chunks: knowledgeStatus.chunkCount || 0 })}</strong> : knowledgeIndexFailed ? <strong>{t('roles.knowledgeIndexError')}</strong> : knowledgeStatus.status === 'ready' ? <strong>{t('roles.knowledgeReady', { chunks: knowledgeStatus.chunkCount || 0 })}</strong> : <strong>{t('roles.knowledgeNotIndexed')}</strong>}{(knowledgePartiallyReady || knowledgeIndexFailed) && knowledgeStatus.error && <p className="knowledge-index-error">{String(knowledgeStatus.error).slice(0, 4000)}</p>}{canReindexKnowledge && <button type="button" className="outline-button knowledge-reindex-button" onClick={retryKnowledgeIndex} disabled={reindexingKnowledge}>{reindexingKnowledge ? <><LoaderCircle className="spin" size={14} />{t('roles.knowledgeReindexing')}</> : <><Search size={14} />{t('roles.knowledgeReindex')}</>}</button>}</> : t('roles.noEmbeddingModels')}</div>}<textarea className="role-textarea knowledge-textarea" value={draft.knowledgeText} onChange={(event) => updateDraft('knowledgeText', event.target.value)} placeholder={t('roles.knowledgePlaceholder')} maxLength={60000} />
         <div className="knowledge-file-toolbar"><button type="button" className="outline-button" onClick={pickFiles}><Plus size={14} />{t('roles.addKnowledgeFiles')}</button><small>{t('roles.knowledgeFileHint')}</small></div>
         {draft.knowledgeFiles.length > 0 && <div className="knowledge-files">{draft.knowledgeFiles.map((file) => <div className="knowledge-file" key={file.id}><FileText size={14} /><span>{file.name}</span><small>{file.size ? `${Math.max(1, Math.ceil(file.size / 1024))} KB` : t('roles.fileStored')}</small><button type="button" onClick={() => removeFile(file.id)} aria-label={t('roles.removeKnowledgeFile', { name: file.name })} title={t('roles.removeKnowledgeFile', { name: file.name })}><X size={13} /></button></div>)}</div>}
       </div>

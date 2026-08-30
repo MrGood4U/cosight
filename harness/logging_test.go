@@ -34,6 +34,32 @@ func TestStructuredLogHelpersWriteExplicitLevels(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogLevelDefaultsToInfo(t *testing.T) {
+	if level := logLevelForMessage("session.ready"); level != logLevelInfo {
+		t.Fatalf("runtime logs should retain INFO, got %q", level)
+	}
+	if level := logLevelForMessage("brain.model.failed"); level != logLevelError {
+		t.Fatalf("failures should remain ERROR, got %q", level)
+	}
+}
+
+func TestOutputLogLevelDefaultsToDebug(t *testing.T) {
+	t.Setenv("COSIGHT_LOG_LEVEL", "")
+	if !shouldOutputLog(logLevelDebug) || !shouldOutputLog(logLevelInfo) || !shouldOutputLog(logLevelError) {
+		t.Fatal("DEBUG output threshold should include DEBUG, INFO, and ERROR records")
+	}
+}
+
+func TestOutputLogLevelCanFilterDetailedRecords(t *testing.T) {
+	t.Setenv("COSIGHT_LOG_LEVEL", "INFO")
+	if shouldOutputLog(logLevelDebug) {
+		t.Fatal("INFO output threshold should filter DEBUG records")
+	}
+	if !shouldOutputLog(logLevelInfo) || !shouldOutputLog(logLevelError) {
+		t.Fatal("INFO output threshold should retain INFO and ERROR records")
+	}
+}
+
 func splitLogLines(data []byte) [][]byte {
 	lines := make([][]byte, 0)
 	for len(data) > 0 {
