@@ -30,9 +30,9 @@ export default function App() {
 
   const {
     activeNav, setActiveNav, language, models, selectedModel, modelMode, harnessModels, harnessSettings,
-    harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible,
+    harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, harnessTestState, harnessTestResult, testHarnessModelConfig,
     setHarnessModelDraft, modelEditorOpen, setModelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible,
-    setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteSelectedModel,
+    setModelApiKeyVisible, modelTestState, modelTestResult, testModelConfig, openNewModel, openEditModel, saveModel, closeModelEditor, selectModel, deleteSelectedModel,
     changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel,
     saveHarnessSettings, deleteHarnessModel, roles, selectedRole, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft,
     openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, reindexRoleKnowledge, selectRole, deleteRole,
@@ -51,16 +51,12 @@ export default function App() {
     startChat, stopChat, isStarting, startChatBlockedReason, screenVideoRef, micMuted, toggleMicrophoneMute,
     deviceLabel, transcript, assistantDraft, elapsed, setTranscript, submitTextMessage, textInput,
     setTextInput, textSending, importedContext, setImportedContext, importLoading, clearConversationContext,
-    isConnected, connectionLabel,
+    isConnected, connectionLabel, seeBboxDebugEnabled, setSeeBboxDebugEnabled,
     toggleNav,
   } = useCosightSession()
 
   return (
     <div className="app-shell">
-      <header className="window-bar">
-        <span>{t('app.name')}</span>
-      </header>
-
       <div className="app-body">
         <aside className="sidebar">
           <div className="brand">Cosight</div>
@@ -75,7 +71,7 @@ export default function App() {
         </aside>
 
         <main className="workspace">
-          {activeNav === 'abilities' ? <AbilitiesPage t={t} /> : activeNav === 'roles' ? <RolesPage {...{ roles, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft, embeddingModels, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, reindexRoleKnowledge, selectRole, deleteRole, isChatActive, t, setNotice }} /> : activeNav === 'models' ? <ModelsPage {...{ models, selectedModel, modelMode, harnessModels, harnessSettings, harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, setHarnessModelDraft, modelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, openNewModel, openEditModel, saveModel, selectModel, deleteModel: deleteSelectedModel, closeModelEditor: () => setModelEditorOpen(false), changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel, isChatActive, t }} /> : activeNav === 'embeddings' ? <EmbeddingPage {...{ models: embeddingModels, editorOpen: embeddingEditorOpen, draft: embeddingModelDraft, setDraft: setEmbeddingModelDraft, apiKeyVisible: embeddingApiKeyVisible, setApiKeyVisible: setEmbeddingApiKeyVisible, testState: embeddingTestState, testResult: embeddingTestResult, openNew: openNewEmbeddingModel, openEdit: openEditEmbeddingModel, save: saveEmbeddingModel, remove: deleteEmbeddingModel, test: testEmbeddingModelConfig, closeEditor: () => setEmbeddingEditorOpen(false), t }} /> : activeNav === 'usage' ? <UsagePage t={t} language={language} /> : activeNav === 'settings' ? <SettingsPage {...{ selectedModel, modelReady, micDevices, selectedMic, audioInputMode, selectAudioInputMode, selectMicrophone, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput, changeOutput, outputVolume, setOutputVolume, autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk, allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript, coreSubtitlesEnabled, setCoreSubtitlesEnabled, language, setLanguage, t, setNotice }} /> : <ChatPage {...{ screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection, roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat, clearConversationContext, isStarting, startChatBlockedReason, setActiveNav, t, isConnected, connectionLabel, screenVideoRef, micMuted, toggleMicrophoneMute, deviceLabel, micActive, micLevel, exportSessionArtifact, importSessionContext, importedContext, setImportedContext, importLoading, transcript, assistantDraft, setTranscript, textInput, setTextInput, textSending }} />}
+          {activeNav === 'abilities' ? <AbilitiesPage t={t} seeBboxDebugEnabled={seeBboxDebugEnabled} setSeeBboxDebugEnabled={setSeeBboxDebugEnabled} /> : activeNav === 'roles' ? <RolesPage {...{ roles, selectedRoleId, roleEditorOpen, roleDraft, setRoleDraft, embeddingModels, openNewRole, openEditRole, closeRoleEditor, previewRolePrompt, saveRole, reindexRoleKnowledge, selectRole, deleteRole, isChatActive, modelMode, t, setNotice }} /> : activeNav === 'models' ? <ModelsPage {...{ models, selectedModel, modelMode, harnessModels, harnessSettings, harnessEditorModule, harnessModelDraft, harnessApiKeyVisible, setHarnessApiKeyVisible, harnessTestState, harnessTestResult, testHarnessModelConfig, setHarnessModelDraft, modelEditorOpen, modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, modelTestState, modelTestResult, testModelConfig, openNewModel, openEditModel, saveModel, selectModel, deleteModel: deleteSelectedModel, closeModelEditor, changeModelMode, openHarnessModelEditor, closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel, isChatActive, t }} /> : activeNav === 'embeddings' ? <EmbeddingPage {...{ models: embeddingModels, editorOpen: embeddingEditorOpen, draft: embeddingModelDraft, setDraft: setEmbeddingModelDraft, apiKeyVisible: embeddingApiKeyVisible, setApiKeyVisible: setEmbeddingApiKeyVisible, testState: embeddingTestState, testResult: embeddingTestResult, openNew: openNewEmbeddingModel, openEdit: openEditEmbeddingModel, save: saveEmbeddingModel, remove: deleteEmbeddingModel, test: testEmbeddingModelConfig, closeEditor: () => setEmbeddingEditorOpen(false), t }} /> : activeNav === 'usage' ? <UsagePage t={t} language={language} /> : activeNav === 'settings' ? <SettingsPage {...{ selectedModel, modelReady, micDevices, selectedMic, audioInputMode, selectAudioInputMode, selectMicrophone, micActive, micLevel, outputDevices, selectedOutput, setSelectedOutput, changeOutput, outputVolume, setOutputVolume, autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk, allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript, coreSubtitlesEnabled, setCoreSubtitlesEnabled, language, setLanguage, t, setNotice }} /> : <ChatPage {...{ screenSharing, screenLoading, stopScreenShare, openSourcePicker, captureLockedDuringConnection, roles, selectedRole, selectedRoleId, selectRole, openNewRole, isChatActive, stopChat, startChat, clearConversationContext, isStarting, startChatBlockedReason, setActiveNav, t, isConnected, connectionLabel, screenVideoRef, micMuted, toggleMicrophoneMute, deviceLabel, micActive, micLevel, elapsed, exportSessionArtifact, importSessionContext, importedContext, setImportedContext, importLoading, transcript, assistantDraft, setTranscript, submitTextMessage, textInput, setTextInput, textSending }} />}
         </main>
 
       </div>

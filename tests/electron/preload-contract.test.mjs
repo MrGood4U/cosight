@@ -37,8 +37,8 @@ async function loadPreload() {
 test('preload exposes all renderer IPC capabilities with stable method names', async () => {
   const { api } = await loadPreload()
   const expected = [
-    'getSettings', 'getUsage', 'pickRoleKnowledgeFiles', 'pickRoleAvatar', 'previewRolePrompt', 'saveRole', 'reindexRoleKnowledge', 'selectRole', 'deleteRole',
-    'saveModel', 'selectModel', 'deleteModel', 'setModelMode', 'saveHarnessModel', 'deleteHarnessModel', 'saveHarnessSettings',
+    'getSettings', 'getUsage', 'pickRoleKnowledgeFiles', 'pickRoleAvatar', 'previewRolePrompt', 'saveRole', 'reindexRoleKnowledge', 'discardRoleKnowledgeBuild', 'selectRole', 'deleteRole',
+    'saveModel', 'testModel', 'cancelModelTest', 'selectModel', 'deleteModel', 'setModelMode', 'saveHarnessModel', 'testHarnessModel', 'deleteHarnessModel', 'saveHarnessSettings',
     'saveEmbeddingModel', 'deleteEmbeddingModel', 'testEmbeddingModel',
     'listDesktopSources', 'exportSession', 'importSession', 'prepareDesktopSource', 'startSystemAudioCapture', 'stopSystemAudioCapture',
     'setSystemAudioMuted', 'setSystemAudioListeningEnabled', 'startSession', 'stopSession', 'updateSessionCapabilities', 'triggerInitiative',
@@ -68,6 +68,36 @@ test('preload routes commands to the intended IPC channel and normalizes boolean
     ['send', 'qwen:video-flush', { data: 'jpeg', mode: 'see', requestId: 'request-1' }],
     ['send', 'qwen:tool-result', { callId: 'call-1', output: { ok: true } }],
     ['send', 'renderer:error', { phase: 'test' }],
+  ])
+})
+
+test('preload forwards model test request ids and exposes cancellation', async () => {
+  const { api, calls } = await loadPreload()
+  await api.testModel({ name: 'legacy', url: 'wss://example.test' }, 'model-test-1')
+  await api.testHarnessModel({ module: 'brain', name: 'brain', url: 'https://example.test' }, 'harness-test-1')
+  api.cancelModelTest('model-test-1')
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['invoke', 'settings:test-model', { name: 'legacy', url: 'wss://example.test' }, 'model-test-1'],
+    ['invoke', 'settings:test-harness-model', { module: 'brain', name: 'brain', url: 'https://example.test' }, 'harness-test-1'],
+    ['send', 'settings:cancel-model-test', 'model-test-1'],
+  ])
+})
+
+test('preload forwards the complete role draft for manual knowledge builds', async () => {
+  const { api, calls } = await loadPreload()
+  const draft = { id: 'official-role', name: 'Official role', knowledgeMode: 'rag', knowledgeText: 'reference' }
+  await api.reindexRoleKnowledge(draft)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['invoke', 'roles:reindex-knowledge', draft],
+  ])
+})
+
+test('preload forwards manual knowledge build cleanup requests', async () => {
+  const { api, calls } = await loadPreload()
+  const payload = { roleId: 'official-role', knowledgeBuildId: 'build-1' }
+  await api.discardRoleKnowledgeBuild(payload)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['invoke', 'roles:discard-knowledge-build', payload],
   ])
 })
 

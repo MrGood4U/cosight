@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
 import { pathToFileURL } from 'node:url'
 
-export const KNOWLEDGE_MODES = ['prompt', 'rag']
+export const KNOWLEDGE_MODES = ['none', 'prompt', 'rag']
 export const KNOWLEDGE_SCHEMA_VERSION = 2
 export const DEFAULT_KNOWLEDGE_MATCH_COUNT = 5
 export const DEFAULT_KNOWLEDGE_MIN_SCORE = 0.2
@@ -78,7 +78,7 @@ function getMeta(db) {
 }
 
 export function normalizeKnowledgeMode(value) {
-  return value === 'rag' ? 'rag' : 'prompt'
+  return KNOWLEDGE_MODES.includes(value) ? value : 'prompt'
 }
 
 export function contentHash(value) {
@@ -198,7 +198,7 @@ export function updateKnowledgeStatus(dbPath, status, details = {}) {
   return getKnowledgeStatus(dbPath)
 }
 
-export async function rebuildKnowledgeDatabase({ dbPath, roleId, embeddingModelId, embeddingFingerprint = '', knowledgeSourceFingerprint: sourceFingerprint = '', sources, embed, sourceErrors = [], canPublish, signal }) {
+export async function rebuildKnowledgeDatabase({ dbPath, roleId, embeddingModelId, embeddingFingerprint = '', knowledgeSourceFingerprint: sourceFingerprint = '', sources, embed, sourceErrors = [], canPublish, signal, onProgress }) {
   throwIfAborted(signal)
   if (!dbPath) throw new Error('知识库路径不能为空。')
   if (typeof embed !== 'function') throw new Error('未提供 Embedding 生成器。')
@@ -225,6 +225,19 @@ export async function rebuildKnowledgeDatabase({ dbPath, roleId, embeddingModelI
   if (pendingChunks.length > MAX_KNOWLEDGE_CHUNKS) {
     throw new Error(`知识库片段超过 ${MAX_KNOWLEDGE_CHUNKS.toLocaleString()} 个的上限。`)
   }
+  const reportProgress = (progress, processedChunks = 0) => {
+    if (typeof onProgress !== 'function') return
+    try {
+      onProgress({
+        progress: Math.max(0, Math.min(95, Math.round(Number(progress) || 0))),
+        processedChunks,
+        totalChunks: pendingChunks.length,
+      })
+    } catch {
+      // Progress reporting must never interrupt the knowledge build.
+    }
+  }
+  reportProgress(0)
   const vectors = []
   for (let index = 0; index < pendingChunks.length; index += 16) {
     throwIfAborted(signal)
@@ -235,6 +248,8 @@ export async function rebuildKnowledgeDatabase({ dbPath, roleId, embeddingModelI
       throw new Error(`Embedding 返回数量异常：期望 ${batch.length}，实际 ${batchVectors?.length || 0}。`)
     }
     vectors.push(...batchVectors)
+    const processedChunks = Math.min(index + batch.length, pendingChunks.length)
+    reportProgress(pendingChunks.length ? (processedChunks / pendingChunks.length) * 95 : 95, processedChunks)
   }
   const dimension = vectors[0]?.length || 0
   if (vectors.some((vector) => !Array.isArray(vector) || vector.length !== dimension)) {

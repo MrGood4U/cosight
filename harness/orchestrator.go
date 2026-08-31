@@ -22,6 +22,8 @@ type turnRequest struct {
 	role                    map[string]any
 	roleID                  string
 	knowledgeMode           string
+	knowledgeRetrievalMode  string
+	knowledgeRequestID      string
 	speakingEnabled         bool
 	drawingEnabled          bool
 	recentConversationCount int
@@ -93,7 +95,9 @@ func (h *harness) snapshotTurnFromASR(client *asrClient, generation uint64, list
 	turn.speakProfile = h.cfg.Models["speak"]
 	turn.role = cloneStringMap(h.cfg.Role)
 	turn.roleID = stringValue(h.cfg.Role["id"], "")
-	turn.knowledgeMode = h.cfg.KnowledgeMode
+	turn.knowledgeMode = normalizeKnowledgeMode(h.cfg.KnowledgeMode)
+	turn.knowledgeRetrievalMode = normalizeKnowledgeRetrievalMode(h.cfg.KnowledgeRetrievalMode)
+	turn.knowledgeRequestID = newID("knowledge_request")
 	turn.speakingEnabled = h.cfg.SpeakingEnabled
 	turn.drawingEnabled = h.cfg.DrawingEnabled
 	turn.recentConversationCount = h.cfg.RecentConversationCount
@@ -140,11 +144,20 @@ func (h *harness) unregisterTurn(requestID string) {
 }
 
 func (h *harness) prepareKnowledgeForTurn(turn turnRequest) {
-	query := turn.payload.Text
-	if turn.initiativePrompt != "" {
-		query = turn.initiativePrompt
+	if turn.knowledgeMode != knowledgeModeRAG || turn.knowledgeRetrievalMode != knowledgeRetrievalModeFast {
+		return
 	}
-	h.requestKnowledgeWithConfig(turn.listen.EventID, turn.roleID, turn.knowledgeMode, query)
+	trigger := "listen"
+	if strings.TrimSpace(turn.initiativePrompt) != "" {
+		trigger = "initiative"
+	}
+	h.requestKnowledgeWithPlan(turn.knowledgeRequestID, turn.roleID, turn.knowledgeMode, knowledgePlan{Query: buildFastKnowledgeQuery(turn)}, knowledgeRequestMetadata{
+		TurnID:         turn.requestID,
+		BrainRequestID: turn.requestID,
+		RoleID:         turn.roleID,
+		Trigger:        trigger,
+		RetrievalMode:  turn.knowledgeRetrievalMode,
+	})
 }
 
 func (h *harness) handleInitiative(prompt string) {
@@ -209,8 +222,34 @@ func (h *harness) processTurn(turn turnRequest) {
 	}
 	queuedAt := turn.queuedAt
 	brainRequestID := turn.requestID
+	knowledgeStatus := "disabled"
+	knowledgeMatchCount := 0
+	knowledgeUsed := false
+	knowledgePlanStatus := "not_requested"
+	deepRetrievalStatus := "not_requested"
+	plannerRequestID := ""
+	plannerResponseID := ""
+	brainResponseID := ""
+	brainStatus := "not_started"
+	reasoningStages := make([]string, 0, 2)
+	reasoningPresent := false
+	reasoningContentBytes := 0
+	reasoningTokens := int64(0)
+	actionCount := 0
+	actionTypes := []string{}
+	addModelReasoning := func(stage string, response modelResponseDetails) {
+		if strings.TrimSpace(response.ReasoningContent) == "" {
+			return
+		}
+		reasoningPresent = true
+		reasoningContentBytes += len(response.ReasoningContent)
+		reasoningTokens += response.ReasoningTokens
+		reasoningStages = append(reasoningStages, stage)
+	}
 	emitLog("brain.request.queued", map[string]any{
 		"requestId":             brainRequestID,
+		"turnId":                brainRequestID,
+		"sessionId":             turn.sessionID,
 		"trigger":               trigger,
 		"listenEventId":         listenEventID,
 		"triggerEventId":        turn.listen.EventID,
@@ -227,12 +266,42 @@ func (h *harness) processTurn(turn turnRequest) {
 		}
 		emitLog("brain.request.finished", map[string]any{
 			"requestId":       brainRequestID,
+			"turnId":          brainRequestID,
+			"sessionId":       turn.sessionID,
 			"trigger":         trigger,
 			"listenEventId":   listenEventID,
 			"triggerEventId":  turn.listen.EventID,
 			"status":          status,
 			"queueWaitMs":     lockAcquiredAt.Sub(queuedAt).Milliseconds(),
 			"totalDurationMs": durationMS(queuedAt),
+		})
+		emitLog("turn.completed", map[string]any{
+			"requestId":              brainRequestID,
+			"turnId":                 brainRequestID,
+			"sessionId":              turn.sessionID,
+			"trigger":                trigger,
+			"listenEventId":          listenEventID,
+			"inputTextBytes":         len(turn.payload.Text),
+			"knowledgeMode":          turn.knowledgeMode,
+			"knowledgeRetrievalMode": turn.knowledgeRetrievalMode,
+			"knowledgeRequestId":     turn.knowledgeRequestID,
+			"knowledgeStatus":        knowledgeStatus,
+			"knowledgeMatchCount":    knowledgeMatchCount,
+			"knowledgeUsed":          knowledgeUsed,
+			"knowledgePlanStatus":    knowledgePlanStatus,
+			"deepRetrievalStatus":    deepRetrievalStatus,
+			"plannerRequestId":       plannerRequestID,
+			"plannerResponseId":      plannerResponseID,
+			"brainStatus":            brainStatus,
+			"brainResponseId":        brainResponseID,
+			"reasoningPresent":       reasoningPresent,
+			"reasoningStages":        reasoningStages,
+			"reasoningContentBytes":  reasoningContentBytes,
+			"reasoningTokens":        reasoningTokens,
+			"actionCount":            actionCount,
+			"actionTypes":            actionTypes,
+			"status":                 status,
+			"totalDurationMs":        durationMS(queuedAt),
 		})
 	}()
 	emitLog("brain.queue.acquired", map[string]any{
@@ -246,12 +315,10 @@ func (h *harness) processTurn(turn turnRequest) {
 		status = "stale"
 		return
 	}
-	knowledge := h.awaitKnowledgeContextWithMode(turn.ctx, turn.listen.EventID, turn.knowledgeMode)
-	if !h.isTurnCurrent(turn) {
-		status = "stale"
+	if turn.ctx != nil && turn.ctx.Err() != nil {
+		status = "cancelled"
 		return
 	}
-
 	recentVision := turn.recentVision
 	seeEventIDs := turn.seeEventIDs
 	visionStatus := turn.visionStatus
@@ -295,93 +362,199 @@ func (h *harness) processTurn(turn turnRequest) {
 		"trigger":             trigger,
 		"sessionId":           turn.sessionID,
 	}
-	if turn.knowledgeMode == "rag" {
+	if turn.initiativePrompt != "" {
+		userInput["initiativePrompt"] = turn.initiativePrompt
+	}
+	knowledge := knowledgeResult{status: "disabled"}
+	var knowledgePlanResult *knowledgePlan
+	var directAction *brainActionEnvelope
+	if turn.knowledgeMode == knowledgeModeRAG {
+		knowledgePlanStatus = "not_used"
+		deepRetrievalStatus = "pending"
+		switch turn.knowledgeRetrievalMode {
+		case knowledgeRetrievalModeDeep:
+			resolution := h.resolveDeepKnowledge(turn, trigger, brainRequestID, listenEventID, seeEventID, userInput)
+			knowledge = resolution.Result
+			knowledgePlanResult = resolution.Plan
+			directAction = resolution.DirectAction
+			plannerRequestID = resolution.PlannerRequestID
+			plannerResponseID = resolution.ModelResponse.ResponseID
+			addModelReasoning("knowledge.plan", resolution.ModelResponse)
+			if resolution.Err != nil {
+				knowledgePlanStatus = "fallback"
+				deepRetrievalStatus = "fallback"
+				emitLog("knowledge.plan.fallback", map[string]any{
+					"requestId":          brainRequestID,
+					"turnId":             brainRequestID,
+					"plannerRequestId":   plannerRequestID,
+					"knowledgeRequestId": turn.knowledgeRequestID,
+					"trigger":            trigger,
+					"error":              resolution.Err.Error(),
+				})
+				knowledge = knowledgeResult{status: "error", err: resolution.Err.Error()}
+			} else if directAction != nil {
+				knowledgePlanStatus = "direct_action"
+				deepRetrievalStatus = "not_requested"
+			} else if knowledgePlanResult != nil {
+				knowledgePlanStatus = "search_selected"
+				deepRetrievalStatus = knowledgeOutcome(knowledge)
+			}
+		default:
+			knowledge = h.awaitKnowledgeContextWithTimeout(turn.ctx, turn.knowledgeRequestID, turn.knowledgeMode, knowledgeFastWaitTimeout)
+			knowledgePlanStatus = "not_used"
+			deepRetrievalStatus = knowledgeOutcome(knowledge)
+		}
+		knowledgeStatus = knowledge.status
+		knowledgeMatchCount = len(knowledge.matches)
+		knowledgeUsed = knowledgeStatusUsable(knowledge.status) && knowledgeMatchCount > 0
+		if knowledgePlanResult != nil {
+			userInput["knowledgePlan"] = knowledgePlanResult
+		}
 		userInput["knowledgeContext"] = knowledge.matches
 		userInput["knowledgeStatus"] = knowledge.status
 		if knowledge.err != "" {
 			userInput["knowledgeError"] = truncate(knowledge.err, 500)
 		}
 	}
-	if turn.initiativePrompt != "" {
-		userInput["initiativePrompt"] = turn.initiativePrompt
-	}
-	encoded, _ := json.Marshal(userInput)
-	brainMaxTokens := 1800
-	brainStartedAt := time.Now()
-	emitLog("brain.model.started", map[string]any{
-		"requestId":                         brainRequestID,
-		"trigger":                           trigger,
-		"listenEventId":                     listenEventID,
-		"triggerEventId":                    turn.listen.EventID,
-		"model":                             turn.brainProfile.Name,
-		"recentTurnCount":                   len(recentTurns),
-		"configuredRecentConversationCount": turn.recentConversationCount,
-		"userTextBytes":                     len(turn.payload.Text),
-		"requestBytes":                      len(encoded),
-		"hasLatestVision":                   visual != nil,
-		"recentVisionCount":                 len(recentVision),
-		"configuredRecentVisionCount":       turn.recentVisionCount,
-		"seeEventId":                        seeEventID,
-		"maxTokens":                         brainMaxTokens,
-		"initiativePromptBytes":             len(turn.initiativePrompt),
-		"conversationSummaryChars":          summaryContentLength(conversationSummary),
-		"knowledgeMode":                     turn.knowledgeMode,
-		"knowledgeMatchCount":               len(knowledge.matches),
-		"knowledgeStatus":                   knowledge.status,
-	})
-	content, err := h.callJSONModelContext(turn.ctx, turn.sessionID, turn.brainProfile, "brain", brainRequestID, buildRoleSystemPrompt(turn.role), string(encoded), &brainMaxTokens)
 	if !h.isTurnCurrent(turn) {
 		status = "stale"
 		return
 	}
-	brainDurationMS := durationMS(brainStartedAt)
-	if err != nil {
-		status = "brain_failed"
-		emitLog("brain.model.failed", map[string]any{
-			"requestId":  brainRequestID,
-			"trigger":    trigger,
-			"model":      turn.brainProfile.Name,
-			"durationMs": brainDurationMS,
-			"error":      err.Error(),
+	if turn.ctx != nil && turn.ctx.Err() != nil {
+		status = "cancelled"
+		return
+	}
+	encoded, _ := json.Marshal(userInput)
+	var action brainActionEnvelope
+	var content string
+	var brainResponse modelResponseDetails
+	var err error
+	parseStartedAt := time.Now()
+	if directAction != nil {
+		action = *directAction
+		brainStatus = "direct_action"
+		emitLog("brain.model.skipped", map[string]any{
+			"requestId":          brainRequestID,
+			"turnId":             brainRequestID,
+			"plannerRequestId":   plannerRequestID,
+			"knowledgeRequestId": turn.knowledgeRequestID,
+			"trigger":            trigger,
+			"reason":             "deep_knowledge_planner_returned_action",
+		})
+	} else {
+		brainMaxTokens := 4096
+		brainStartedAt := time.Now()
+		brainStatus = "started"
+		emitLog("brain.model.started", map[string]any{
+			"requestId":                         brainRequestID,
+			"turnId":                            brainRequestID,
+			"sessionId":                         turn.sessionID,
+			"trigger":                           trigger,
+			"listenEventId":                     listenEventID,
+			"triggerEventId":                    turn.listen.EventID,
+			"model":                             turn.brainProfile.Name,
+			"recentTurnCount":                   len(recentTurns),
+			"configuredRecentConversationCount": turn.recentConversationCount,
+			"userTextBytes":                     len(turn.payload.Text),
+			"requestBytes":                      len(encoded),
+			"hasLatestVision":                   visual != nil,
+			"recentVisionCount":                 len(recentVision),
+			"configuredRecentVisionCount":       turn.recentVisionCount,
+			"seeEventId":                        seeEventID,
+			"maxTokens":                         brainMaxTokens,
+			"initiativePromptBytes":             len(turn.initiativePrompt),
+			"conversationSummaryChars":          summaryContentLength(conversationSummary),
+			"knowledgeMode":                     turn.knowledgeMode,
+			"knowledgeRetrievalMode":            turn.knowledgeRetrievalMode,
+			"knowledgeMatchCount":               len(knowledge.matches),
+			"knowledgeStatus":                   knowledge.status,
+			"knowledgeUsed":                     knowledgeStatusUsable(knowledge.status) && len(knowledge.matches) > 0,
+			"knowledgeRequestId":                turn.knowledgeRequestID,
+			"plannerRequestId":                  plannerRequestID,
+		})
+		content, brainResponse, err = h.callJSONModelContextWithDetails(turn.ctx, turn.sessionID, turn.brainProfile, "brain", brainRequestID, buildRoleSystemPrompt(turn.role), string(encoded), &brainMaxTokens)
+		brainResponseID = brainResponse.ResponseID
+		addModelReasoning("brain", brainResponse)
+		if !h.isTurnCurrent(turn) {
+			status = "stale"
+			return
+		}
+		if turn.ctx != nil && turn.ctx.Err() != nil {
+			status = "cancelled"
+			return
+		}
+		brainDurationMS := durationMS(brainStartedAt)
+		if err != nil {
+			brainStatus = "failed"
+			status = "brain_failed"
+			emitLog("brain.model.failed", map[string]any{
+				"requestId":  brainRequestID,
+				"turnId":     brainRequestID,
+				"sessionId":  turn.sessionID,
+				"trigger":    trigger,
+				"model":      turn.brainProfile.Name,
+				"durationMs": brainDurationMS,
+				"error":      err.Error(),
+			})
+			h.recordLatency("brain", brainDurationMS)
+			h.logActionFailure("brain", "", "BRAIN_FAILED", err.Error())
+			emitBridgeError(fmt.Sprintf("Brain 请求失败：%v", err))
+			return
+		}
+		brainStatus = "completed"
+		emitLog("brain.model.completed", map[string]any{
+			"requestId":             brainRequestID,
+			"turnId":                brainRequestID,
+			"sessionId":             turn.sessionID,
+			"model":                 turn.brainProfile.Name,
+			"durationMs":            brainDurationMS,
+			"contentBytes":          len(content),
+			"reasoningPresent":      strings.TrimSpace(brainResponse.ReasoningContent) != "",
+			"reasoningContentBytes": len(brainResponse.ReasoningContent),
+			"reasoningTokens":       brainResponse.ReasoningTokens,
 		})
 		h.recordLatency("brain", brainDurationMS)
-		h.logActionFailure("brain", "", "BRAIN_FAILED", err.Error())
-		emitBridgeError(fmt.Sprintf("Brain 请求失败：%v", err))
-		return
+		parseStartedAt = time.Now()
+		action, err = parseBrainAction(content, turn.sessionID, listenEventID, seeEventID)
+		if err != nil {
+			brainStatus = "invalid_action"
+			status = "brain_invalid_action"
+			emitLog("brain.parse.failed", map[string]any{
+				"requestId":       brainRequestID,
+				"turnId":          brainRequestID,
+				"sessionId":       turn.sessionID,
+				"parseDurationMs": durationMS(parseStartedAt),
+				"totalDurationMs": durationMS(brainStartedAt),
+				"contentBytes":    len(content),
+				"error":           err.Error(),
+			})
+			emitDebugLog("brain.parse.output", map[string]any{
+				"requestId":  brainRequestID,
+				"turnId":     brainRequestID,
+				"sessionId":  turn.sessionID,
+				"content":    truncateRunes(content, 12000),
+				"parseError": err.Error(),
+			})
+			h.logActionFailure("brain", "", "BRAIN_INVALID_ACTION", err.Error())
+			return
+		}
 	}
-	emitLog("brain.model.completed", map[string]any{
-		"requestId":    brainRequestID,
-		"model":        turn.brainProfile.Name,
-		"durationMs":   brainDurationMS,
-		"contentBytes": len(content),
-	})
-	h.recordLatency("brain", brainDurationMS)
-	parseStartedAt := time.Now()
-	action, err := parseBrainAction(content, turn.sessionID, listenEventID, seeEventID)
-	if err != nil {
-		status = "brain_invalid_action"
-		emitLog("brain.parse.failed", map[string]any{
-			"requestId":       brainRequestID,
-			"parseDurationMs": durationMS(parseStartedAt),
-			"totalDurationMs": durationMS(brainStartedAt),
-			"contentBytes":    len(content),
-			"contentPreview":  truncate(content, 4000),
-			"error":           err.Error(),
-		})
-		h.logActionFailure("brain", "", "BRAIN_INVALID_ACTION", err.Error())
-		return
-	}
-	actionTypes := make([]string, 0, len(action.Actions))
+	actionTypes = make([]string, 0, len(action.Actions))
 	for _, item := range action.Actions {
 		actionTypes = append(actionTypes, item.Type)
 	}
 	emitLog("brain.parse.completed", map[string]any{
 		"requestId":       brainRequestID,
+		"turnId":          brainRequestID,
+		"sessionId":       turn.sessionID,
 		"parseDurationMs": durationMS(parseStartedAt),
 		"actionCount":     len(action.Actions),
 		"actionTypes":     actionTypes,
 		"hasSpeak":        hasActionType(action.Actions, "speak"),
 	})
+	actionCount = len(action.Actions)
+	actionTypes = append([]string(nil), actionTypes...)
+	brainStatus = "parsed"
 	if !h.isTurnCurrent(turn) {
 		status = "stale"
 		return
@@ -394,6 +567,7 @@ func (h *harness) processTurn(turn turnRequest) {
 	action.Type = "brain.action"
 	action.SessionID = turn.sessionID
 	status = "action_emitted"
+	brainStatus = "action_emitted"
 	emitLog("brain.action.emitted", map[string]any{
 		"requestId":      brainRequestID,
 		"eventId":        action.EventID,
@@ -424,6 +598,7 @@ func (h *harness) processTurn(turn turnRequest) {
 		return
 	}
 	status = "actions_executed"
+	brainStatus = "actions_executed"
 	emitLog("assistant.response.done", map[string]any{
 		"requestId":       brainRequestID,
 		"actionCount":     len(action.Actions),

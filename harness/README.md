@@ -55,6 +55,22 @@ exact user/assistant text, source, session, and request identifiers needed for
 later evaluation. It does not record raw audio, video frames, API keys, or full
 prompts.
 
+For one complete chat turn, `turn.completed` is the summary entry to inspect.
+It keeps the same `turnId`/`requestId` across the Brain request, knowledge
+request, planner request, and model response. `knowledgeUsed` indicates that a
+usable knowledge result contained at least one match; `knowledgeStatus`,
+`knowledgePlanStatus`, and `deepRetrievalStatus` explain whether retrieval was
+disabled, selected, used, empty, timed out, or failed. `brainStatus`,
+`brainResponseId`, `actionCount`, and `actionTypes` show whether Brain returned
+and executed an action.
+
+Detailed model material is `DEBUG` only. `brain.model.output` and
+`knowledge.plan.result` contain bounded model JSON/output, while
+`brain.model.reasoning` and the corresponding `knowledge.plan` response fields
+record provider reasoning when the provider returns it. Model output is capped
+at 12,000 runes and reasoning at 20,000 runes; API keys and system prompts are
+not written to these records.
+
 See prompts follow the Qwen-VL grounding convention: the model is asked to
 return `bbox_2d` as `[x_min, y_min, x_max, y_max]` on a 0-1000 normalized grid.
 The parser accepts the official top-level item array as well as the Harness

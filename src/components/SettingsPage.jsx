@@ -57,7 +57,7 @@ export function SettingsPage({ selectedModel, modelReady, micDevices, selectedMi
   </section>
 }
 
-export function ModelEditor({ draft, setDraft, apiKeyVisible, setApiKeyVisible, onSave, onCancel, t }) {
+export function ModelEditor({ draft, setDraft, apiKeyVisible, setApiKeyVisible, testState, testResult, onSave, onTest, onCancel, t }) {
   const updateDraft = (key, value) => setDraft((current) => ({ ...current, [key]: value }))
   return <div className="model-editor">
     <div className="editor-heading"><strong>{draft.id ? t('model.editTitle') : t('model.addTitle')}</strong><button onClick={onCancel} aria-label={t('common.close')} title={t('common.close')}><X size={15} /></button></div>
@@ -65,7 +65,7 @@ export function ModelEditor({ draft, setDraft, apiKeyVisible, setApiKeyVisible, 
     <label className="editor-label">{t('model.name')}<input className="text-input" value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} placeholder={t('model.namePlaceholder')} /></label>
     <label className="editor-label">{t('model.realtimeUrl')}<input className="text-input" value={draft.url} onChange={(event) => updateDraft('url', event.target.value)} placeholder={t('model.urlPlaceholder')} /></label>
     <label className="editor-label">{t('model.apiKey')}<div className="secret-field"><input type={apiKeyVisible ? 'text' : 'password'} value={draft.apiKey} onChange={(event) => updateDraft('apiKey', event.target.value)} placeholder={draft.id ? t('model.keepKeyPlaceholder') : t('model.keyPlaceholder')} /><button onClick={() => setApiKeyVisible((value) => !value)} aria-label={apiKeyVisible ? t('model.hideKey') : t('model.showKey')} title={apiKeyVisible ? t('model.hideKey') : t('model.showKey')}>{apiKeyVisible ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
-    <div className="editor-actions"><button className="outline-button" onClick={onCancel}>{t('model.cancel')}</button><button className="save-key-button" onClick={onSave}><Check size={14} /> {t('model.save')}</button></div>
+    <>{testResult && <div className={`model-test-result ${testState}`} role="status">{testState === 'success' ? <><Check size={14} />{t('model.testSuccess')}</> : testResult.error}</div>}<div className="editor-actions"><button className="outline-button" onClick={onCancel}>{t('model.cancel')}</button><button className="outline-button" onClick={onTest} disabled={testState === 'testing'}>{testState === 'testing' ? t('model.testing') : t('model.test')}</button><button className="save-key-button" onClick={onSave}><Check size={14} /> {t('model.save')}</button></div></>
   </div>
 }
 

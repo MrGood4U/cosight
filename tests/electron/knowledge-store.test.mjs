@@ -27,6 +27,7 @@ test('knowledge store chunks text, persists vectors, and retrieves the closest p
     knowledgeFiles: [{ id: 'doc-a', name: 'alpha.md', size: 32, hash: 'hash-alpha' }],
   }
   const sourceFingerprint = knowledgeSourceFingerprint(roleSources)
+  const progressEvents = []
   try {
     const status = await rebuildKnowledgeDatabase({
       dbPath,
@@ -38,12 +39,17 @@ test('knowledge store chunks text, persists vectors, and retrieves the closest p
         { id: 'doc-b', name: 'beta.md', type: 'md', content: 'beta topic and database' },
       ],
       embed: async (texts) => texts.map((text) => text.includes('database') ? [0, 1] : [1, 0]),
+      onProgress: (progress) => progressEvents.push(progress),
     })
     assert.equal(status.status, 'ready')
     assert.equal(status.sourceCount, 2)
     assert.equal(status.chunkCount, 2)
     assert.equal(getKnowledgeStatus(dbPath).embeddingModelId, 'embed-1')
     assert.equal(getKnowledgeStatus(dbPath).knowledgeSourceFingerprint, sourceFingerprint)
+    assert.equal(progressEvents[0].progress, 0)
+    assert.equal(progressEvents.at(-1).progress, 95)
+    assert.equal(progressEvents.at(-1).processedChunks, 2)
+    assert.equal(progressEvents.at(-1).totalChunks, 2)
 
     const matches = searchKnowledgeDatabase({ dbPath, queryVector: [0, 1], limit: 1 })
     assert.equal(matches.length, 1)

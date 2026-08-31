@@ -6,6 +6,7 @@ import {
   HARNESS_MODULES,
   DEFAULT_HARNESS_SETTINGS,
   SEE_BBOX_DEBUG_ENABLED,
+  SEE_BBOX_DEBUG_STORAGE_KEY,
   DEFAULT_OUTPUT_VOLUME,
   OUTPUT_VOLUME_STORAGE_KEY,
   DEFAULT_AUDIO_INPUT_MODE,
@@ -13,6 +14,8 @@ import {
   normalizeAudioInputMode,
   ROLE_ABILITY_IDS,
   DEFAULT_ROLE_ABILITY_IDS,
+  DEFAULT_SCREEN_VISION_INTERVAL_SECONDS,
+  DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
   NEW_ROLE_DEFAULT_ABILITY_IDS,
   ROLE_ABILITY_LABEL_KEYS,
   USAGE_CHART_COLORS,
@@ -70,6 +73,8 @@ const [harnessSettings, setHarnessSettings] = useState(DEFAULT_HARNESS_SETTINGS)
 const [harnessEditorModule, setHarnessEditorModule] = useState('')
 const [harnessModelDraft, setHarnessModelDraft] = useState(null)
 const [harnessApiKeyVisible, setHarnessApiKeyVisible] = useState(false)
+const [harnessTestState, setHarnessTestState] = useState('idle')
+const [harnessTestResult, setHarnessTestResult] = useState(null)
 const [embeddingModels, setEmbeddingModels] = useState([])
 const [embeddingEditorOpen, setEmbeddingEditorOpen] = useState(false)
 const [embeddingModelDraft, setEmbeddingModelDraft] = useState(emptyEmbeddingModelDraft())
@@ -79,6 +84,8 @@ const [embeddingTestResult, setEmbeddingTestResult] = useState(null)
 const [modelEditorOpen, setModelEditorOpen] = useState(false)
 const [modelDraft, setModelDraft] = useState({ id: '', alias: '', name: '', url: DEFAULT_REALTIME_URL, apiKey: '' })
 const [modelApiKeyVisible, setModelApiKeyVisible] = useState(false)
+const [modelTestState, setModelTestState] = useState('idle')
+const [modelTestResult, setModelTestResult] = useState(null)
 const [roles, setRoles] = useState([])
 const [selectedRoleId, setSelectedRoleId] = useState('')
 const [roleEditorOpen, setRoleEditorOpen] = useState(false)
@@ -130,6 +137,14 @@ const [coreSubtitlesEnabled, setCoreSubtitlesEnabled] = useState(() => {
     return true
   }
 })
+const [seeBboxDebugEnabled, setSeeBboxDebugEnabled] = useState(() => {
+  try {
+    const stored = window.localStorage.getItem(SEE_BBOX_DEBUG_STORAGE_KEY)
+    return stored === null ? SEE_BBOX_DEBUG_ENABLED : stored === 'true'
+  } catch {
+    return SEE_BBOX_DEBUG_ENABLED
+  }
+})
 const [elapsed, setElapsed] = useState(0)
 const [transcript, setTranscript] = useState([])
 const [textInput, setTextInput] = useState('')
@@ -171,6 +186,7 @@ const coreCaptionRef = useRef(null)
 const writingCaptionTimerRef = useRef(null)
 const coreCaptionTimerRef = useRef(null)
 const coreSubtitlesRef = useRef(coreSubtitlesEnabled)
+const seeBboxDebugEnabledRef = useRef(seeBboxDebugEnabled)
 const connectionRef = useRef(connection)
 const audioInputModeRef = useRef(audioInputMode)
 const lastBridgeErrorRef = useRef('')
@@ -186,6 +202,55 @@ const screenSourceRef = useRef(null)
 const initiativeSilenceTimerRef = useRef(null)
 const lastInitiativeActivityRef = useRef(Date.now())
 const initiativeResponsePendingRef = useRef(false)
+const modelTestRequestRef = useRef(0)
+const modelTestAbortRef = useRef(null)
+const modelTestDraftSignatureRef = useRef(null)
+const modelTestLatestDraftSignatureRef = useRef('')
+const modelTestActiveRequestIdRef = useRef('')
+const harnessTestRequestRef = useRef(0)
+const harnessTestAbortRef = useRef(null)
+const harnessTestDraftSignatureRef = useRef(null)
+const harnessTestLatestDraftSignatureRef = useRef('')
+const harnessTestActiveRequestIdRef = useRef('')
+modelTestLatestDraftSignatureRef.current = JSON.stringify(modelDraft)
+harnessTestLatestDraftSignatureRef.current = JSON.stringify(harnessModelDraft)
+
+function cancelRendererModelTest(activeRequestIdRef) {
+  const requestId = activeRequestIdRef.current
+  activeRequestIdRef.current = ''
+  if (!requestId) return
+  try {
+    window.cosight?.cancelModelTest?.(requestId)
+  } catch {
+    // Renderer cleanup must still invalidate the local result if IPC is unavailable.
+  }
+}
+
+useEffect(() => {
+  const signature = JSON.stringify(modelDraft)
+  if (modelTestDraftSignatureRef.current !== null && modelTestDraftSignatureRef.current !== signature) {
+    modelTestRequestRef.current += 1
+    modelTestAbortRef.current?.abort()
+    modelTestAbortRef.current = null
+    cancelRendererModelTest(modelTestActiveRequestIdRef)
+    setModelTestState('idle')
+    setModelTestResult(null)
+  }
+  modelTestDraftSignatureRef.current = signature
+}, [modelDraft])
+
+useEffect(() => {
+  const signature = JSON.stringify(harnessModelDraft)
+  if (harnessTestDraftSignatureRef.current !== null && harnessTestDraftSignatureRef.current !== signature) {
+    harnessTestRequestRef.current += 1
+    harnessTestAbortRef.current?.abort()
+    harnessTestAbortRef.current = null
+    cancelRendererModelTest(harnessTestActiveRequestIdRef)
+    setHarnessTestState('idle')
+    setHarnessTestResult(null)
+  }
+  harnessTestDraftSignatureRef.current = signature
+}, [harnessModelDraft])
 
 const selectedModel = useMemo(() => models.find((model) => model.id === selectedModelId) || null, [models, selectedModelId])
 const selectedRole = useMemo(() => roles.find((role) => role.id === selectedRoleId) || null, [roles, selectedRoleId])
@@ -353,13 +418,23 @@ useEffect(() => {
   if (window.cosight?.onQwenEvent) unsubscribe = window.cosight.onQwenEvent(handleQwenEvent)
   const unsubscribeKnowledge = window.cosight?.onKnowledgeStatus?.((payload) => {
     if (!payload?.roleId) return
-    setRoles((current) => current.map((role) => role.id === payload.roleId ? { ...role, knowledgeStatus: payload } : role))
-    setRoleDraft((current) => current.id === payload.roleId ? { ...current, knowledgeStatus: payload } : current)
+    if (!payload.staged) setRoles((current) => current.map((role) => role.id === payload.roleId ? { ...role, knowledgeStatus: payload } : role))
+    setRoleDraft((current) => current.id === payload.roleId
+      ? { ...current, knowledgeStatus: payload, knowledgeBuildId: payload.knowledgeBuildId || current.knowledgeBuildId || '' }
+      : current)
   }) || (() => {})
   return () => {
     unsubscribe()
     unsubscribeKnowledge()
     navigator.mediaDevices?.removeEventListener?.('devicechange', loadDevices)
+    modelTestRequestRef.current += 1
+    modelTestAbortRef.current?.abort()
+    modelTestAbortRef.current = null
+    cancelRendererModelTest(modelTestActiveRequestIdRef)
+    harnessTestRequestRef.current += 1
+    harnessTestAbortRef.current?.abort()
+    harnessTestAbortRef.current = null
+    cancelRendererModelTest(harnessTestActiveRequestIdRef)
     stopAllCapture()
   }
 }, [loadDevices])
@@ -411,6 +486,15 @@ useEffect(() => {
     // Local persistence is optional in the desktop shell.
   }
 }, [coreSubtitlesEnabled])
+
+useEffect(() => {
+  seeBboxDebugEnabledRef.current = seeBboxDebugEnabled
+  try {
+    window.localStorage.setItem(SEE_BBOX_DEBUG_STORAGE_KEY, String(seeBboxDebugEnabled))
+  } catch {
+    // Local persistence is optional in the desktop shell.
+  }
+}, [seeBboxDebugEnabled])
 
 useEffect(() => {
   try {
@@ -772,7 +856,7 @@ function handleQwenEvent(event) {
   if (event.type === 'harness.draw.requested') void handleHarnessDraw(event)
   if (event.type === 'harness.signal') {
     recordSessionEvent('harness.signal', event.signal || {})
-    if (SEE_BBOX_DEBUG_ENABLED && event.signal?.type === 'see.completed') {
+    if (seeBboxDebugEnabledRef.current && event.signal?.type === 'see.completed') {
       const debugBoxes = normalizeSeeDebugBoxes(event.signal)
       void window.cosight?.drawOnOverlay?.({ debugBoxes })
     }
@@ -1699,8 +1783,9 @@ useEffect(() => {
 
 useEffect(() => {
   if (!screenSharing || !screenSourceRef.current) return undefined
-  if (screenCaptureKind === 'screen' && (useTransparentCanvas || useWritingAbility || coreSubtitlesEnabled || SEE_BBOX_DEBUG_ENABLED)) {
+  if (screenCaptureKind === 'screen' && (useTransparentCanvas || useWritingAbility || coreSubtitlesEnabled || seeBboxDebugEnabled)) {
     void window.cosight?.showOverlay?.(screenSourceRef.current)
+    if (!seeBboxDebugEnabled) void window.cosight?.drawOnOverlay?.({ debugBoxes: [] })
     if (!useTransparentCanvas) drawingStrokesRef.current = []
     if (!useWritingAbility) {
       writingCaptionRef.current = null
@@ -1725,7 +1810,7 @@ useEffect(() => {
   coreCaptionTimerRef.current = null
   void window.cosight?.hideOverlay?.()
   return undefined
-}, [screenSharing, screenCaptureKind, useTransparentCanvas, useWritingAbility, coreSubtitlesEnabled])
+}, [screenSharing, screenCaptureKind, useTransparentCanvas, useWritingAbility, coreSubtitlesEnabled, seeBboxDebugEnabled])
 
 function stopAllCapture() {
   stopScreenShare()
@@ -1847,7 +1932,7 @@ async function stopChat() {
 }
 
 async function submitTextMessage(event) {
-  event.preventDefault()
+  event?.preventDefault?.()
   const text = textInput.trim()
   if (!text || textSending) return
   if (!isConnected) {
@@ -1874,9 +1959,24 @@ async function submitTextMessage(event) {
   }
 }
 
+function resetModelTestState() {
+  modelTestRequestRef.current += 1
+  modelTestAbortRef.current?.abort()
+  modelTestAbortRef.current = null
+  cancelRendererModelTest(modelTestActiveRequestIdRef)
+  setModelTestState('idle')
+  setModelTestResult(null)
+}
+
+function closeModelEditor() {
+  resetModelTestState()
+  setModelEditorOpen(false)
+}
+
 function openNewModel() {
   setModelDraft({ id: '', alias: '', name: '', url: DEFAULT_REALTIME_URL, apiKey: '' })
   setModelApiKeyVisible(false)
+  resetModelTestState()
   setModelEditorOpen(true)
 }
 
@@ -1884,9 +1984,47 @@ function openEditModel(model = selectedModel) {
   if (!model) return
   setModelDraft({ id: model.id, alias: model.alias || '', name: model.name, url: model.url, apiKey: '' })
   setModelApiKeyVisible(false)
+  resetModelTestState()
   setModelEditorOpen(true)
 }
 
+async function testModelConfig() {
+  const requestSequence = modelTestRequestRef.current + 1
+  modelTestRequestRef.current = requestSequence
+  modelTestAbortRef.current?.abort()
+  cancelRendererModelTest(modelTestActiveRequestIdRef)
+  const controller = new AbortController()
+  modelTestAbortRef.current = controller
+  const requestId = `model-test-${requestSequence}`
+  modelTestActiveRequestIdRef.current = requestId
+  controller.signal.addEventListener('abort', () => {
+    if (modelTestActiveRequestIdRef.current === requestId) cancelRendererModelTest(modelTestActiveRequestIdRef)
+  }, { once: true })
+  const draftAtRequest = { ...modelDraft }
+  const draftSignatureAtRequest = JSON.stringify(draftAtRequest)
+  setModelTestState('testing')
+  setModelTestResult(null)
+  try {
+    const result = await window.cosight?.testModel?.(draftAtRequest, requestId)
+    if (controller.signal.aborted || modelTestRequestRef.current !== requestSequence || modelTestLatestDraftSignatureRef.current !== draftSignatureAtRequest) return
+    if (!result?.ok) {
+      setModelTestState('error')
+      setModelTestResult({ error: result?.error || t('model.testFailed') })
+      return
+    }
+    setModelTestState('success')
+    setModelTestResult({})
+  } catch (error) {
+    if (controller.signal.aborted || modelTestRequestRef.current !== requestSequence || modelTestLatestDraftSignatureRef.current !== draftSignatureAtRequest) return
+    setModelTestState('error')
+    setModelTestResult({ error: error.message || t('model.testFailed') })
+  } finally {
+    if (modelTestRequestRef.current === requestSequence) {
+      modelTestAbortRef.current = null
+      if (modelTestActiveRequestIdRef.current === requestId) modelTestActiveRequestIdRef.current = ''
+    }
+  }
+}
 async function saveModel() {
   const result = await window.cosight?.saveModel?.(modelDraft)
   if (!result?.ok) {
@@ -1898,7 +2036,7 @@ async function saveModel() {
     return [...next, result.model]
   })
   setSelectedModelId(result.selectedModelId || result.model.id)
-  setModelEditorOpen(false)
+  closeModelEditor()
   setNotice(t('notices.modelSaved'))
 }
 
@@ -1910,9 +2048,12 @@ async function changeModelMode(nextMode) {
     return
   }
   setModelMode(nextMode)
+  closeModelEditor()
+  closeHarnessModelEditor()
 }
 
 function openHarnessModelEditor(module, model = harnessModels[module]) {
+  closeHarnessModelEditor()
   const isRealtime = module === 'listen' || module === 'speak'
   setHarnessEditorModule(module)
   setHarnessModelDraft({
@@ -1925,6 +2066,46 @@ function openHarnessModelEditor(module, model = harnessModels[module]) {
     apiKey: '',
   })
   setHarnessApiKeyVisible(false)
+  setHarnessTestState('idle')
+  setHarnessTestResult(null)
+}
+
+async function testHarnessModelConfig() {
+  const requestSequence = harnessTestRequestRef.current + 1
+  harnessTestRequestRef.current = requestSequence
+  harnessTestAbortRef.current?.abort()
+  cancelRendererModelTest(harnessTestActiveRequestIdRef)
+  const controller = new AbortController()
+  harnessTestAbortRef.current = controller
+  const requestId = `harness-test-${requestSequence}`
+  harnessTestActiveRequestIdRef.current = requestId
+  controller.signal.addEventListener('abort', () => {
+    if (harnessTestActiveRequestIdRef.current === requestId) cancelRendererModelTest(harnessTestActiveRequestIdRef)
+  }, { once: true })
+  const draftAtRequest = harnessModelDraft ? { ...harnessModelDraft } : null
+  const draftSignatureAtRequest = JSON.stringify(draftAtRequest)
+  setHarnessTestState('testing')
+  setHarnessTestResult(null)
+  try {
+    const result = await window.cosight?.testHarnessModel?.(draftAtRequest, requestId)
+    if (controller.signal.aborted || harnessTestRequestRef.current !== requestSequence || harnessTestLatestDraftSignatureRef.current !== draftSignatureAtRequest) return
+    if (!result?.ok) {
+      setHarnessTestState('error')
+      setHarnessTestResult({ error: result?.error || t('model.testFailed') })
+      return
+    }
+    setHarnessTestState('success')
+    setHarnessTestResult({})
+  } catch (error) {
+    if (controller.signal.aborted || harnessTestRequestRef.current !== requestSequence || harnessTestLatestDraftSignatureRef.current !== draftSignatureAtRequest) return
+    setHarnessTestState('error')
+    setHarnessTestResult({ error: error.message || t('model.testFailed') })
+  } finally {
+    if (harnessTestRequestRef.current === requestSequence) {
+      harnessTestAbortRef.current = null
+      if (harnessTestActiveRequestIdRef.current === requestId) harnessTestActiveRequestIdRef.current = ''
+    }
+  }
 }
 
 async function saveHarnessModel() {
@@ -1934,8 +2115,7 @@ async function saveHarnessModel() {
     return
   }
   setHarnessModels((current) => ({ ...current, [result.module]: result.model }))
-  setHarnessEditorModule('')
-  setHarnessModelDraft(null)
+  closeHarnessModelEditor()
   setNotice(t('notices.harnessModelSaved'))
 }
 
@@ -1950,6 +2130,12 @@ async function saveHarnessSettings(nextSettings) {
 }
 
 function closeHarnessModelEditor() {
+  harnessTestRequestRef.current += 1
+  harnessTestAbortRef.current?.abort()
+  harnessTestAbortRef.current = null
+  cancelRendererModelTest(harnessTestActiveRequestIdRef)
+  setHarnessTestState('idle')
+  setHarnessTestResult(null)
   setHarnessEditorModule('')
   setHarnessModelDraft(null)
 }
@@ -2001,7 +2187,6 @@ function openEditEmbeddingModel(model) {
     id: model.id,
     type: model.type || 'cloud',
     alias: model.alias || '',
-    name: model.name || '',
     model: model.model || '',
     url: model.url || '',
     dimensions: model.dimensions ? String(model.dimensions) : '',
@@ -2051,7 +2236,7 @@ async function saveEmbeddingModel() {
 }
 
 async function deleteEmbeddingModel(model) {
-  if (!model || !window.confirm(t('embeddings.deleteConfirm', { name: model.alias || model.name }))) return
+  if (!model || !window.confirm(t('embeddings.deleteConfirm', { name: model.alias || model.model }))) return
   const result = await window.cosight?.deleteEmbeddingModel?.(model.id)
   if (!result?.ok) {
     setNotice(result?.error || t('notices.embeddingModelDeleteFailed'))
@@ -2071,16 +2256,29 @@ function openNewRole(returnNav = 'roles') {
 }
 
 function openEditRole(role) {
-  if (!role || role.isBuiltin || isChatActive) return
+  if (!role || isChatActive) return
   const abilities = [...(role.abilities || [])]
   const legacyLanguage = role.language || 'auto'
-  setRoleDraft({ ...emptyRoleDraft(), ...role, listeningLanguage: role.listeningLanguage || legacyLanguage, outputLanguage: role.outputLanguage || legacyLanguage, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || '5') : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || '8') : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])], knowledgeMode: role.knowledgeMode || 'prompt', embeddingModelId: role.embeddingModelId || '', knowledgeStatus: role.knowledgeStatus || null })
+  setRoleDraft({ ...emptyRoleDraft(), ...role, listeningLanguage: role.listeningLanguage || legacyLanguage, outputLanguage: role.outputLanguage || legacyLanguage, speechStyle: typeof role.speechStyle === 'string' ? role.speechStyle : '', avatarRemoved: false, abilities, drawingPolicy: abilities.includes('drawing') ? (role.drawingPolicy || role.writingPolicy || role.subtitlesPolicy || '') : '', writingPolicy: role.writingPolicy || role.subtitlesPolicy || '', screenVisionIntervalSec: abilities.includes('screenVision') ? String(role.screenVisionIntervalSec || DEFAULT_SCREEN_VISION_INTERVAL_SECONDS) : '', screenVisionChangeThreshold: abilities.includes('screenVision') ? String(role.screenVisionChangeThreshold || DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD) : '', initiativeTimeoutSec: abilities.includes('initiative') ? (role.initiativeTimeoutSec || '10') : '', initiativePrompt: abilities.includes('initiative') ? (role.initiativePrompt || '') : '', knowledgeFiles: [...(role.knowledgeFiles || [])], knowledgeMode: role.knowledgeMode || 'prompt', knowledgeRetrievalMode: role.knowledgeRetrievalMode || 'fast', embeddingModelId: role.embeddingModelId || '', knowledgeStatus: role.knowledgeStatus || null })
   setRoleEditorReturnNav('roles')
   setRoleEditorOpen(true)
   setActiveNav('roles')
 }
 
-function closeRoleEditor() {
+async function discardRoleKnowledgeBuild() {
+  if (!roleDraft.id) return
+  try {
+    await window.cosight?.discardRoleKnowledgeBuild?.({
+      roleId: roleDraft.id,
+      knowledgeBuildId: roleDraft.knowledgeBuildId || '',
+    })
+  } catch {
+    // Cleanup is best effort; the main process also removes stale staging data on startup.
+  }
+}
+
+async function closeRoleEditor() {
+  await discardRoleKnowledgeBuild()
   setRoleEditorOpen(false)
   setActiveNav(roleEditorReturnNav)
 }
@@ -2109,7 +2307,10 @@ async function saveRole() {
     setNotice(t('notices.roleNameRequired'))
     return
   }
-  const result = await window.cosight?.saveRole?.(roleDraft)
+  const roleToSave = modelMode === 'harness'
+    ? roleDraft
+    : { ...roleDraft, knowledgeRetrievalMode: 'fast' }
+  const result = await window.cosight?.saveRole?.(roleToSave)
   if (!result?.ok) {
     setNotice(result?.error || t('notices.roleSaveFailed'))
     return
@@ -2126,10 +2327,11 @@ async function saveRole() {
   setNotice(t('notices.roleSaved'))
 }
 
-async function reindexRoleKnowledge(roleId) {
+async function reindexRoleKnowledge(roleInput) {
+  const requestedRoleId = typeof roleInput === 'string' ? roleInput.trim() : (roleInput?.id || '')
   let result
   try {
-    result = await window.cosight?.reindexRoleKnowledge?.(roleId)
+    result = await window.cosight?.reindexRoleKnowledge?.(roleInput)
   } catch (error) {
     result = { ok: false, error: error.message }
   }
@@ -2138,9 +2340,19 @@ async function reindexRoleKnowledge(roleId) {
     return false
   }
   const status = result.status || { status: 'indexing' }
-  setRoles((current) => current.map((role) => role.id === roleId ? { ...role, knowledgeStatus: status } : role))
-  setRoleDraft((current) => current.id === roleId ? { ...current, knowledgeStatus: status } : current)
-  setNotice(t('notices.knowledgeReindexStarted'))
+  const roleId = result.roleId || requestedRoleId
+  if (!result.knowledgeBuildId) setRoles((current) => current.map((role) => role.id === roleId ? { ...role, knowledgeStatus: status } : role))
+  setRoleDraft((current) => {
+    if (current.id && current.id !== requestedRoleId && current.id !== roleId) return current
+    return {
+      ...current,
+      id: roleId || current.id,
+      knowledgeStatus: status,
+      knowledgeBuildId: result.knowledgeBuildId || '',
+      knowledgeFiles: Array.isArray(result.knowledgeFiles) ? result.knowledgeFiles : current.knowledgeFiles,
+    }
+  })
+  setNotice(t('notices.knowledgeBuildCompleted'))
   return true
 }
 
@@ -2205,9 +2417,11 @@ function playPcm(base64) {
 }
 
 function toggleNav(key) {
+  if (roleEditorOpen && key !== 'roles') void discardRoleKnowledgeBuild()
   setActiveNav(key)
-  if (key === 'abilities' || key === 'roles' || key === 'models' || key === 'embeddings' || key === 'settings') {
-    setModelEditorOpen(false)
+  if (key === 'chatSession' || key === 'abilities' || key === 'roles' || key === 'models' || key === 'embeddings' || key === 'usage' || key === 'settings') {
+    closeModelEditor()
+    closeHarnessModelEditor()
   }
 }
 
@@ -2276,16 +2490,17 @@ useEffect(() => {
     models, setModels, selectedModelId, setSelectedModelId, modelMode, setModelMode,
     harnessModels, setHarnessModels, harnessSettings, setHarnessSettings,
     harnessEditorModule, setHarnessEditorModule, harnessModelDraft, setHarnessModelDraft,
-    harnessApiKeyVisible, setHarnessApiKeyVisible, modelEditorOpen, setModelEditorOpen,
+    harnessApiKeyVisible, setHarnessApiKeyVisible, harnessTestState, harnessTestResult, modelEditorOpen, setModelEditorOpen,
     embeddingModels, setEmbeddingModels, embeddingEditorOpen, setEmbeddingEditorOpen,
     embeddingModelDraft, setEmbeddingModelDraft, embeddingApiKeyVisible, setEmbeddingApiKeyVisible,
     embeddingTestState, embeddingTestResult,
-    modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible,
+    modelDraft, setModelDraft, modelApiKeyVisible, setModelApiKeyVisible, modelTestState, modelTestResult,
     roles, setRoles, selectedRoleId, setSelectedRoleId, roleEditorOpen, setRoleEditorOpen,
     roleDraft, setRoleDraft, rolePromptPreviewOpen, setRolePromptPreviewOpen,
     rolePromptPreviewLoading, rolePromptPreview, setRolePromptPreview, setRolePromptPreviewOpen,
     micDevices, outputDevices, selectedMic, setSelectedMic, audioInputMode, selectedOutput, setSelectedOutput,
     outputVolume, setOutputVolume, connection, setConnection, screenSharing, screenLoading,
+    seeBboxDebugEnabled, setSeeBboxDebugEnabled,
     autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk,
     allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript,
     coreSubtitlesEnabled, setCoreSubtitlesEnabled,
@@ -2300,8 +2515,8 @@ useEffect(() => {
     startChatBlockedReason,
     exportSessionArtifact, importSessionContext, openSourcePicker, shareSource,
     stopScreenShare, toggleMicrophoneMute, startChat, stopChat, clearConversationContext, submitTextMessage,
-    openNewModel, openEditModel, saveModel, changeModelMode, openHarnessModelEditor,
-    closeHarnessModelEditor, saveHarnessModel, saveHarnessSettings, deleteHarnessModel,
+    openNewModel, openEditModel, saveModel, testModelConfig, closeModelEditor, changeModelMode, openHarnessModelEditor,
+    closeHarnessModelEditor, saveHarnessModel, testHarnessModelConfig, saveHarnessSettings, deleteHarnessModel,
     openNewEmbeddingModel, openEditEmbeddingModel, saveEmbeddingModel, deleteEmbeddingModel,
     testEmbeddingModelConfig,
     selectModel, deleteSelectedModel, openNewRole, openEditRole, closeRoleEditor,

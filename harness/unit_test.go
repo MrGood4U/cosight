@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +95,95 @@ func TestNormalizeModelUsageSupportsSnakeCaseProviderFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelUsageReadsNestedReasoningTokens(t *testing.T) {
+	usage, err := json.Marshal(map[string]any{
+		"prompt_tokens":     12,
+		"completion_tokens": 8,
+		"completion_tokens_details": map[string]any{
+			"reasoning_tokens": 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to encode usage: %v", err)
+	}
+	parsed := normalizeModelUsage(usage)
+	if parsed["reasoningTokens"] != int64(5) {
+		t.Fatalf("expected nested reasoning token count, got %+v", parsed)
+	}
+}
+
+func TestCallJSONModelCapturesReasoningDetailsAtDebug(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "harness.log")
+	t.Setenv("COSIGHT_DEBUG_LOG", logPath)
+	t.Setenv("COSIGHT_LOG_LEVEL", logLevelDebug)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "response-1",
+			"model": "mock-brain",
+			"choices": []any{map[string]any{
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"content":           `{"actions":[{"type":"speak","text":"回答"}]}`,
+					"reasoning_content": "先判断问题，再组织回答。",
+				},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 20,
+				"total_tokens":      30,
+				"completion_tokens_details": map[string]any{
+					"reasoning_tokens": 7,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	h := newHarness()
+	profile := modelProfile{Name: "mock-brain", URL: server.URL, APIKey: "mock-key"}
+	content, details, err := h.callJSONModelContextWithDetails(
+		context.Background(),
+		"session-1",
+		profile,
+		"brain",
+		"request-1",
+		"system prompt",
+		map[string]any{"text": "你好"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("callJSONModelContextWithDetails failed: %v", err)
+	}
+	if content == "" || details.ResponseID != "response-1" || details.ReasoningContent != "先判断问题，再组织回答。" || details.ReasoningTokens != 7 {
+		t.Fatalf("unexpected model response details: content=%q details=%+v", content, details)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read structured log: %v", err)
+	}
+	var sawResponse, sawOutput, sawReasoning bool
+	for _, rawLine := range splitLogLines(data) {
+		var entry map[string]any
+		if err := json.Unmarshal(rawLine, &entry); err != nil {
+			t.Fatalf("failed to decode log line: %v", err)
+		}
+		payload, _ := entry["payload"].(map[string]any)
+		switch entry["kind"] {
+		case "harness.brain.model.response.received":
+			sawResponse = payload["reasoningPresent"] == true && payload["reasoningContentBytes"] != nil
+		case "harness.brain.model.output":
+			sawOutput = payload["content"] == content
+		case "harness.brain.model.reasoning":
+			sawReasoning = payload["reasoningContent"] == "先判断问题，再组织回答。" && payload["reasoningTokens"] == float64(7)
+		}
+	}
+	if !sawResponse || !sawOutput || !sawReasoning {
+		t.Fatalf("expected response, output, and reasoning diagnostics in log: response=%v output=%v reasoning=%v", sawResponse, sawOutput, sawReasoning)
+	}
+}
+
 func TestKnowledgeContextRoundTripIsRoutedByEventID(t *testing.T) {
 	h := newHarness()
 	h.cfg.KnowledgeMode = "rag"
@@ -170,6 +261,14 @@ func TestPromptKnowledgeIncludesHydratedFilesButRAGDoesNotInjectRawText(t *testi
 	})
 	if strings.Contains(ragPrompt, "do not inject this") || strings.Contains(ragPrompt, "do not inject this either") {
 		t.Fatalf("RAG mode should not inject raw knowledge: %s", ragPrompt)
+	}
+	nonePrompt := buildRoleSystemPrompt(map[string]any{
+		"knowledgeMode":  "none",
+		"knowledgeText":  "do not inject this in none mode",
+		"knowledgeFiles": []any{map[string]any{"name": "notes.md", "content": "do not inject this file in none mode"}},
+	})
+	if strings.Contains(nonePrompt, "do not inject this in none mode") || strings.Contains(nonePrompt, "do not inject this file in none mode") {
+		t.Fatalf("none mode should not inject raw knowledge: %s", nonePrompt)
 	}
 }
 

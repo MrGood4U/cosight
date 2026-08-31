@@ -13,15 +13,30 @@ import (
 	"time"
 )
 
+type modelResponseDetails struct {
+	ResponseID       string
+	ResponseModel    string
+	FinishReasons    []string
+	Content          string
+	ReasoningContent string
+	ReasoningTokens  int64
+}
+
 func (h *harness) callJSONModel(profile modelProfile, stage, requestID, systemPrompt string, content any, maxTokens *int) (string, error) {
 	h.mu.Lock()
 	ctx := h.ctx
 	sessionID := h.cfg.SessionID
 	h.mu.Unlock()
-	return h.callJSONModelContext(ctx, sessionID, profile, stage, requestID, systemPrompt, content, maxTokens)
+	result, _, err := h.callJSONModelContextWithDetails(ctx, sessionID, profile, stage, requestID, systemPrompt, content, maxTokens)
+	return result, err
 }
 
 func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, profile modelProfile, stage, requestID, systemPrompt string, content any, maxTokens *int) (string, error) {
+	result, _, err := h.callJSONModelContextWithDetails(ctx, sessionID, profile, stage, requestID, systemPrompt, content, maxTokens)
+	return result, err
+}
+
+func (h *harness) callJSONModelContextWithDetails(ctx context.Context, sessionID string, profile modelProfile, stage, requestID, systemPrompt string, content any, maxTokens *int) (string, modelResponseDetails, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -32,7 +47,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			"model":     profile.Name,
 			"error":     err.Error(),
 		})
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	payload := map[string]any{
 		"model": profile.Name,
@@ -53,7 +68,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			"model":     profile.Name,
 			"error":     err.Error(),
 		})
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	inputContentBytes := 0
 	if encodedContent, contentErr := json.Marshal(content); contentErr == nil {
@@ -67,7 +82,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			"model":     profile.Name,
 			"error":     err.Error(),
 		})
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	request.Header.Set("Authorization", "Bearer "+profile.APIKey)
 	request.Header.Set("Content-Type", "application/json")
@@ -81,7 +96,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			"requestBytes": len(body),
 			"error":        err.Error(),
 		})
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
@@ -94,7 +109,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			"requestBytes": len(body),
 			"error":        err.Error(),
 		})
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	baseResponseLog := map[string]any{
 		"requestId":         requestID,
@@ -112,7 +127,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		baseResponseLog["responsePreview"] = truncate(string(responseBody), 4000)
 		emitLog(stage+".model.response.failed", baseResponseLog)
-		return "", fmt.Errorf("模型 HTTP %d：%s", response.StatusCode, truncate(string(responseBody), 2000))
+		return "", modelResponseDetails{}, fmt.Errorf("模型 HTTP %d：%s", response.StatusCode, truncate(string(responseBody), 2000))
 	}
 	var envelope struct {
 		ID      string `json:"id"`
@@ -123,6 +138,8 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			Message      struct {
 				Content          json.RawMessage `json:"content"`
 				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				Thinking         json.RawMessage `json:"thinking"`
 				Refusal          json.RawMessage `json:"refusal"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -133,7 +150,7 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 		baseResponseLog["responsePreview"] = truncate(string(responseBody), 4000)
 		baseResponseLog["parseError"] = err.Error()
 		emitLog(stage+".model.response.parse_failed", baseResponseLog)
-		return "", err
+		return "", modelResponseDetails{}, err
 	}
 	if len(envelope.Choices) == 0 {
 		baseResponseLog["responsePreview"] = truncate(string(responseBody), 12000)
@@ -142,11 +159,19 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			baseResponseLog["providerErrorPreview"] = truncate(string(envelope.Error), 2000)
 		}
 		emitLog(stage+".model.response.empty_choices", baseResponseLog)
-		return "", errors.New("模型响应缺少 choices")
+		return "", modelResponseDetails{}, errors.New("模型响应缺少 choices")
 	}
 
 	choice := envelope.Choices[0]
 	contentText := extractContentText(choice.Message.Content)
+	reasoningRaw := choice.Message.ReasoningContent
+	if !jsonRawPresent(reasoningRaw) {
+		reasoningRaw = choice.Message.Reasoning
+	}
+	if !jsonRawPresent(reasoningRaw) {
+		reasoningRaw = choice.Message.Thinking
+	}
+	reasoningContent := extractContentText(reasoningRaw)
 	responseLog := map[string]any{}
 	for key, value := range baseResponseLog {
 		responseLog[key] = value
@@ -161,7 +186,8 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 	responseLog["finishReasons"] = finishReasons
 	responseLog["contentKind"] = jsonRawKind(choice.Message.Content)
 	responseLog["contentBytes"] = len(contentText)
-	responseLog["reasoningContentBytes"] = jsonRawTextLength(choice.Message.ReasoningContent)
+	responseLog["reasoningPresent"] = strings.TrimSpace(reasoningContent) != ""
+	responseLog["reasoningContentBytes"] = len(reasoningContent)
 	responseLog["refusalBytes"] = jsonRawTextLength(choice.Message.Refusal)
 	responseLog["providerErrorPresent"] = jsonRawPresent(envelope.Error)
 	responseLog["usagePresent"] = jsonRawPresent(envelope.Usage)
@@ -184,12 +210,49 @@ func (h *harness) callJSONModelContext(ctx context.Context, sessionID string, pr
 			emitLog("model.usage", usageFields)
 		}
 	}
+	reasoningTokens := int64(0)
+	if jsonRawPresent(envelope.Usage) {
+		var usage map[string]any
+		if json.Unmarshal(envelope.Usage, &usage) == nil {
+			reasoningTokens = reasoningTokenCount(usage)
+		}
+	}
+	responseLog["reasoningTokens"] = reasoningTokens
 	if strings.TrimSpace(contentText) == "" {
 		responseLog["emptyContent"] = true
 		responseLog["responsePreview"] = truncate(string(responseBody), 12000)
 	}
 	emitLog(stage+".model.response.received", responseLog)
-	return contentText, nil
+	responseDetails := modelResponseDetails{
+		ResponseID:       envelope.ID,
+		ResponseModel:    envelope.Model,
+		FinishReasons:    finishReasons,
+		Content:          contentText,
+		ReasoningContent: reasoningContent,
+		ReasoningTokens:  reasoningTokens,
+	}
+	emitDebugLog(stage+".model.output", map[string]any{
+		"sessionId":     sessionID,
+		"requestId":     requestID,
+		"module":        stage,
+		"model":         profile.Name,
+		"responseId":    envelope.ID,
+		"finishReasons": finishReasons,
+		"content":       truncateRunes(contentText, 12000),
+	})
+	if strings.TrimSpace(reasoningContent) != "" {
+		emitDebugLog(stage+".model.reasoning", map[string]any{
+			"sessionId":             sessionID,
+			"requestId":             requestID,
+			"module":                stage,
+			"model":                 profile.Name,
+			"responseId":            envelope.ID,
+			"reasoningContent":      truncateRunes(reasoningContent, 20000),
+			"reasoningContentBytes": len(reasoningContent),
+			"reasoningTokens":       reasoningTokens,
+		})
+	}
+	return contentText, responseDetails, nil
 }
 
 func emitRealtimeUsage(module, model string, event map[string]any) {
@@ -237,10 +300,28 @@ func normalizeModelUsage(raw json.RawMessage) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"inputTokens":  inputTokens,
-		"outputTokens": outputTokens,
-		"totalTokens":  totalTokens,
+		"inputTokens":     inputTokens,
+		"outputTokens":    outputTokens,
+		"totalTokens":     totalTokens,
+		"reasoningTokens": reasoningTokenCount(usage),
 	}
+}
+
+func reasoningTokenCount(usage map[string]any) int64 {
+	if usage == nil {
+		return 0
+	}
+	if count := usageNumber(usage, "reasoningTokens", "reasoning_tokens", "thinkingTokens", "thinking_tokens"); count > 0 {
+		return count
+	}
+	for _, key := range []string{"completion_tokens_details", "completionTokensDetails", "output_tokens_details", "outputTokensDetails"} {
+		if details, ok := usage[key].(map[string]any); ok {
+			if count := usageNumber(details, "reasoningTokens", "reasoning_tokens", "thinkingTokens", "thinking_tokens"); count > 0 {
+				return count
+			}
+		}
+	}
+	return 0
 }
 
 func usageNumber(usage map[string]any, keys ...string) int64 {

@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import tempfile
@@ -28,6 +29,29 @@ class FakeConversation:
 
 
 class QwenBridgeUnitTests(unittest.TestCase):
+    def test_connection_command_returns_one_json_result_and_stops_the_probe(self):
+        calls = []
+
+        class FakeBridge:
+            def start(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+            def stop(self):
+                calls.append('stop')
+
+        output = io.StringIO()
+        with patch.object(bridge_module, 'OmniBridge', FakeBridge), \
+             patch.object(bridge_module, 'dashscope', object()), \
+             patch.dict(bridge_module.os.environ, {'DASHSCOPE_API_KEY': 'secret'}), \
+             patch.object(sys, 'stdin', io.StringIO('{"model":"mock-model","url":"wss://example.test/realtime"}')), \
+             patch.object(sys, 'stdout', output):
+            bridge_module.test_connection_command()
+
+        self.assertEqual(json.loads(output.getvalue()), {'ok': True})
+        self.assertEqual(calls[-1], 'stop')
+        self.assertEqual(calls[0][0][:2], ('mock-model', 'wss://example.test/realtime'))
+        self.assertFalse(calls[0][1]['speaking_enabled'])
+
     def test_log_levels_distinguish_runtime_details_and_errors(self):
         self.assertEqual(bridge_module._log_level("session.ready"), "INFO")
         self.assertEqual(bridge_module._log_level("brain.model.failed"), "ERROR")
@@ -85,6 +109,21 @@ class QwenBridgeUnitTests(unittest.TestCase):
         self.assertNotIn("secret full document", instructions)
         self.assertNotIn("secret.md", instructions)
         self.assertNotIn("Knowledge (reference only", instructions)
+
+    def test_none_role_does_not_inject_or_request_knowledge(self):
+        instructions = bridge_module.build_role_instructions({
+            "name": "No knowledge role",
+            "knowledgeMode": "none",
+            "knowledgeText": "secret full document",
+            "knowledgeFiles": [{"name": "secret.md", "path": "missing.md"}],
+        })
+        self.assertNotIn("secret full document", instructions)
+        self.assertNotIn("secret.md", instructions)
+
+        bridge = bridge_module.OmniBridge()
+        bridge.role = {"id": "role-1", "knowledgeMode": "none"}
+        bridge.knowledge_mode = False
+        self.assertEqual(bridge.request_knowledge("should not search"), "")
 
     def test_rag_transcript_requests_and_applies_retrieved_context(self):
         bridge = bridge_module.OmniBridge()

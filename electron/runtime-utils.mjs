@@ -5,6 +5,13 @@ const ROLE_ABILITY_ALIASES = { subtitles: 'drawing', writing: 'drawing' }
 
 export const HARNESS_MODULES = ['brain', 'listen', 'speak', 'see']
 
+// The renderer exposes a virtual Default role when no persisted role is
+// selected. Keep its runtime capabilities and screen-vision defaults here so
+// the main process does not have to infer them from a missing role object.
+export const DEFAULT_ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing']
+export const DEFAULT_SCREEN_VISION_INTERVAL_SECONDS = 5
+export const DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD = 8
+
 export const DEFAULT_HARNESS_SETTINGS = {
   seeMinIntervalMs: 5000,
   recentConversationCount: 20,
@@ -12,8 +19,31 @@ export const DEFAULT_HARNESS_SETTINGS = {
 }
 
 const DEFAULT_INITIATIVE_TIMEOUT_SECONDS = 10
-const DEFAULT_SCREEN_VISION_INTERVAL_SECONDS = 5
-const DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD = 8
+
+export function defaultRoleForRuntime() {
+  return {
+    id: '',
+    isDefault: true,
+    name: 'Default',
+    identity: 'Cosight 默认对话行为',
+    listeningLanguage: 'auto',
+    outputLanguage: 'auto',
+    voice: '',
+    speechStyle: '',
+    abilities: [...DEFAULT_ROLE_ABILITY_IDS],
+    drawingPolicy: '',
+    writingPolicy: '',
+    screenVisionIntervalSec: DEFAULT_SCREEN_VISION_INTERVAL_SECONDS,
+    screenVisionChangeThreshold: DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
+    initiativeTimeoutSec: '',
+    initiativePrompt: '',
+    knowledgeText: '',
+    knowledgeFiles: [],
+    knowledgeMode: 'prompt',
+    knowledgeRetrievalMode: 'fast',
+    embeddingModelId: '',
+  }
+}
 
 export function normalizeRoleAbilities(value) {
   const result = []

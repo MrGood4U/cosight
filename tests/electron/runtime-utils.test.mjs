@@ -2,10 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  DEFAULT_ROLE_ABILITY_IDS,
+  DEFAULT_SCREEN_VISION_INTERVAL_SECONDS,
+  DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
   HARNESS_MODULES,
   buildInitiativeCommand,
   configuredHarnessModels,
   configuredHarnessSettings,
+  defaultRoleForRuntime,
   normalizeInitiativeInstructions,
   normalizeInitiativeTimeout,
   normalizeRoleAbilities,
@@ -16,6 +20,9 @@ import {
 } from '../../electron/runtime-utils.mjs'
 
 import {
+  DEFAULT_ROLE_ABILITY_IDS as RENDERER_DEFAULT_ROLE_ABILITY_IDS,
+  DEFAULT_SCREEN_VISION_INTERVAL_SECONDS as RENDERER_DEFAULT_SCREEN_VISION_INTERVAL_SECONDS,
+  DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD as RENDERER_DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
   emptyConversationSummary,
   normalizeConversationSummary,
   normalizeImportedSessionArtifact,
@@ -38,6 +45,18 @@ test('screen vision and initiative settings are clamped to safe ranges', () => {
   assert.equal(normalizeInitiativeTimeout('1'), 5)
   assert.equal(normalizeInitiativeTimeout('999'), 300)
   assert.equal(normalizeInitiativeTimeout('not-a-number'), 10)
+})
+
+test('the virtual Default role has the same runtime capability defaults as the renderer', () => {
+  const role = defaultRoleForRuntime()
+  assert.deepEqual(role.abilities, DEFAULT_ROLE_ABILITY_IDS)
+  assert.equal(DEFAULT_ROLE_ABILITY_IDS.join(','), RENDERER_DEFAULT_ROLE_ABILITY_IDS.join(','))
+  assert.equal(DEFAULT_SCREEN_VISION_INTERVAL_SECONDS, RENDERER_DEFAULT_SCREEN_VISION_INTERVAL_SECONDS)
+  assert.equal(role.screenVisionIntervalSec, DEFAULT_SCREEN_VISION_INTERVAL_SECONDS)
+  assert.equal(role.screenVisionChangeThreshold, DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD)
+  assert.equal(DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD, RENDERER_DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD)
+  assert.equal(role.knowledgeMode, 'prompt')
+  assert.equal(role.knowledgeRetrievalMode, 'fast')
 })
 
 test('Harness settings keep all configured context controls in bounds', () => {

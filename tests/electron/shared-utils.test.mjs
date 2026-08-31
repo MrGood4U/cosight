@@ -111,6 +111,8 @@ test('role, text, and generic value helpers keep unsafe or malformed values boun
   assert.equal(DEFAULT_OUTPUT_VOLUME, 48)
 
   assert.equal(formatElapsed(125), '02:05')
+  assert.equal(formatElapsed(undefined), '00:00')
+  assert.equal(formatElapsed(Number.NaN), '00:00')
   assert.equal(clampNumber('bad', 1, 5, 3), 3)
   assert.equal(clampNumber(8, 1, 5), 5)
   assert.equal(isHexColor('#abcdef'), true)
@@ -126,8 +128,9 @@ test('role, text, and generic value helpers keep unsafe or malformed values boun
   assert.deepEqual(sessionRoleSnapshot({ id: 'r1', language: 'en-US', name: 'Role' }), {
     id: 'r1', name: 'Role', identity: '', goal: '', corePrinciples: '', behavior: '', workflow: '', constraints: '',
     listeningLanguage: 'en-US', outputLanguage: 'en-US', voice: '', speechStyle: '', abilities: [], drawingPolicy: '', writingPolicy: '',
-    screenVisionIntervalSec: '', screenVisionChangeThreshold: '', initiativeTimeoutSec: '', initiativePrompt: '', knowledgeText: '', knowledgeMode: 'prompt', embeddingModelId: '', knowledgeFiles: [],
+    screenVisionIntervalSec: '', screenVisionChangeThreshold: '', initiativeTimeoutSec: '', initiativePrompt: '', knowledgeText: '', knowledgeMode: 'prompt', knowledgeRetrievalMode: 'fast', embeddingModelId: '', knowledgeFiles: [],
   })
+  assert.equal(sessionRoleSnapshot({ knowledgeMode: 'rag', knowledgeRetrievalMode: 'deep' }).knowledgeRetrievalMode, 'deep')
 })
 
 test('session artifact normalization rejects invalid artifacts and removes media from safe event payloads', () => {

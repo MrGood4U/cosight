@@ -129,7 +129,7 @@ func emitDebugLog(message string, fields map[string]any) {
 
 func logLevelForMessage(message string) string {
 	lower := strings.ToLower(strings.TrimSpace(message))
-	for _, marker := range []string{".error", ".failed", ".rejected", "_error", "_failed", "_rejected", "失败", "错误"} {
+	for _, marker := range []string{".error", ".failed", ".rejected", ".invalid", ".fallback", ".timeout", ".cancelled", ".unavailable", "_error", "_failed", "_rejected", "_invalid", "_timeout", "失败", "错误"} {
 		if strings.Contains(lower, marker) {
 			return logLevelError
 		}

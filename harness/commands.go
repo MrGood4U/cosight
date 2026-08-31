@@ -44,7 +44,22 @@ func (h *harness) handleCommand(command inputCommand) {
 		result := actionResult{OK: command.OK, Result: command.Result, Error: command.Error}
 		h.receiveActionResult(command.ActionID, result)
 	case "knowledge.context":
-		h.receiveKnowledgeContext(command.KnowledgeEventID, command.KnowledgeMatches, command.KnowledgeStatus, commandErrorText(command.Error))
+		emitLog("knowledge.context.command.received", map[string]any{
+			"eventId":            command.KnowledgeEventID,
+			"knowledgeRequestId": command.KnowledgeRequestID,
+			"turnId":             command.KnowledgeTurnID,
+			"brainRequestId":     command.KnowledgeBrainRequestID,
+			"plannerRequestId":   command.KnowledgePlannerRequestID,
+			"roleId":             command.KnowledgeRoleID,
+			"status":             command.KnowledgeStatus,
+			"matches":            len(command.KnowledgeMatches),
+		})
+		h.receiveKnowledgeContextWithMetadata(command.KnowledgeEventID, command.KnowledgeMatches, command.KnowledgeStatus, commandErrorText(command.Error), knowledgeRequestMetadata{
+			TurnID:           command.KnowledgeTurnID,
+			BrainRequestID:   command.KnowledgeBrainRequestID,
+			PlannerRequestID: command.KnowledgePlannerRequestID,
+			RoleID:           command.KnowledgeRoleID,
+		})
 	case "stop":
 		h.stop()
 	case "start":

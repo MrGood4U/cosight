@@ -42,7 +42,6 @@ function responseMessage(body, status) {
 export function normalizeEmbeddingModelInput(value) {
   const type = value?.type === 'local' ? 'local' : 'cloud'
   const alias = typeof value?.alias === 'string' ? value.alias.trim().slice(0, 120) : ''
-  const name = typeof value?.name === 'string' ? value.name.trim().slice(0, 200) : ''
   const url = typeof value?.url === 'string' ? value.url.trim().slice(0, 1000) : ''
   const model = typeof value?.model === 'string' ? value.model.trim().slice(0, 200) : ''
   const dimensions = Number(value?.dimensions)
@@ -50,7 +49,6 @@ export function normalizeEmbeddingModelInput(value) {
     id: typeof value?.id === 'string' ? value.id : '',
     type,
     alias,
-    name,
     url,
     model,
     dimensions: Number.isFinite(dimensions) && dimensions > 0 ? Math.min(MAX_EMBEDDING_DIMENSIONS, Math.round(dimensions)) : 0,
@@ -63,7 +61,6 @@ export function embeddingModelFingerprint(value) {
   return createHash('sha256').update(JSON.stringify({
     id: model.id,
     type: model.type,
-    name: model.name,
     model: model.model,
     url: model.url,
     dimensions: model.dimensions,

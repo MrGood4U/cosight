@@ -86,7 +86,7 @@ export function ChatPage(props) {
  {assistantDraft && <TranscriptLine item={{ time: formatElapsed(elapsed), speaker: 'Cosight', text: assistantDraft }} t={t} live />}
  {!transcript.length && !assistantDraft && <div className="empty-transcript">{t('transcript.empty')}</div>}
             </div>
-            <form className="text-message-form" onSubmit={submitTextMessage}>
+            <div className="text-message-form" role="group" aria-label={t('transcript.textInput')}>
  <textarea
    className="text-message-input"
    value={textInput}
@@ -94,7 +94,7 @@ export function ChatPage(props) {
    onKeyDown={(event) => {
      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
        event.preventDefault()
-       event.currentTarget.form?.requestSubmit()
+       void submitTextMessage()
      }
    }}
    placeholder={t('transcript.textInputPlaceholder')}
@@ -105,12 +105,12 @@ export function ChatPage(props) {
  />
  <div className="text-message-footer">
    <span>{isConnected ? t('transcript.textInputHint') : t('transcript.textInputDisconnected')}</span>
-   <button type="submit" className="primary-button text-message-submit" disabled={!isConnected || textSending || !textInput.trim()}>
+   <button type="button" className="primary-button text-message-submit" onClick={() => { void submitTextMessage() }} disabled={!isConnected || textSending || !textInput.trim()}>
      {textSending ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}
      {textSending ? t('transcript.textInputSending') : t('transcript.textInputSend')}
    </button>
  </div>
-            </form>
+            </div>
           </section>
     </>
   )

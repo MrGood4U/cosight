@@ -71,6 +71,8 @@ func newHarness() *harness {
 
 func (h *harness) start(config startConfig) error {
 	h.stopInternal(false)
+	config.KnowledgeMode = normalizeKnowledgeMode(config.KnowledgeMode)
+	config.KnowledgeRetrievalMode = normalizeKnowledgeRetrievalMode(config.KnowledgeRetrievalMode)
 	if config.SessionID == "" {
 		config.SessionID = newID("session")
 	}
@@ -139,6 +141,7 @@ func (h *harness) start(config startConfig) error {
 		"drawingEnabled":          config.DrawingEnabled,
 		"initiativeEnabled":       config.InitiativeEnabled,
 		"knowledgeMode":           config.KnowledgeMode,
+		"knowledgeRetrievalMode":  config.KnowledgeRetrievalMode,
 		"recentConversationCount": config.RecentConversationCount,
 		"recentVisionCount":       config.RecentVisionCount,
 		"seeMinIntervalMs":        config.SeeMinIntervalMS,

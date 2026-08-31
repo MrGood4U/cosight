@@ -42,8 +42,7 @@ export function EmbeddingModelCard({ model, onEdit, onDelete, t }) {
     <div className="embedding-card-main">
       <div className="model-card-icon"><Icon size={19} /></div>
       <div className="embedding-card-content">
-        <div className="embedding-card-title-row"><h2 title={model.alias || model.name}>{model.alias || model.name}</h2><span className="embedding-kind-badge">{typeLabel(model.type, t)}</span></div>
-        {model.alias && <p className="model-card-real-name">{model.name}</p>}
+        <div className="embedding-card-title-row"><h2 title={model.alias || model.model}>{model.alias || model.model}</h2><span className="embedding-kind-badge">{typeLabel(model.type, t)}</span></div>
         <p className="model-card-url" title={model.url}>{model.url}</p>
         <div className="embedding-card-meta"><span>{t('embeddings.model')}: {model.model}</span>{model.dimensions ? <span>{t('embeddings.dimensions')}: {model.dimensions}</span> : null}<span className="model-key-state ready">{model.hasApiKey ? t('embeddings.keySaved') : model.type === 'local' ? t('embeddings.keyOptional') : t('model.keyRequired')}</span></div>
       </div>
@@ -59,7 +58,6 @@ export function EmbeddingModelEditor({ draft, setDraft, apiKeyVisible, setApiKey
     <div className="embedding-editor-heading"><div><span className="page-kicker">{t('embeddings.kicker')}</span><h2 id="embedding-editor-title">{draft.id ? t('embeddings.editTitle') : t('embeddings.addTitle')}</h2><p>{isLocal ? t('embeddings.localHint') : t('embeddings.cloudHint')}</p></div><button type="button" className="icon-button" onClick={onCancel} aria-label={t('common.close')} title={t('common.close')}><X size={16} /></button></div>
     <div className="embedding-editor-grid">
       <label className="editor-label">{t('embeddings.alias')}<input className="text-input" value={draft.alias} onChange={(event) => update('alias', event.target.value)} placeholder={t('embeddings.aliasPlaceholder')} maxLength={120} /></label>
-      <label className="editor-label">{t('embeddings.name')}<input className="text-input" value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder={t('embeddings.namePlaceholder')} /></label>
       <label className="editor-label">{t('embeddings.model')}<input className="text-input" value={draft.model} onChange={(event) => update('model', event.target.value)} placeholder={t('embeddings.modelPlaceholder')} /></label>
       <label className="editor-label">{t('embeddings.dimensions')}<input className="text-input" inputMode="numeric" value={draft.dimensions} onChange={(event) => update('dimensions', event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder={t('embeddings.dimensionsPlaceholder')} /><small>{t('embeddings.dimensionsHint')}</small></label>
       <label className="editor-label embedding-url-field">{t('embeddings.url')}<input className="text-input" type="url" value={draft.url} onChange={(event) => update('url', event.target.value)} placeholder={t('embeddings.urlPlaceholder')} /><small>{t('embeddings.urlHint')}</small></label>

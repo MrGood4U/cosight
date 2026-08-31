@@ -24,6 +24,10 @@ const (
 	maxConversationSummaryChars        = 800
 	conversationSummaryMaxTokens       = 600
 	maxTextLength                      = 12000
+	knowledgeFastQueryMaxChars         = 6000
+	knowledgeFastRecentMessages        = 6
+	knowledgeFastWaitTimeout           = 1200 * time.Millisecond
+	knowledgePlannerMaxTokens          = 700
 	defaultTTSVoice                    = "Cherry"
 	defaultBrainURL                    = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 	defaultSeeURL                      = "https://dashscope.aliyuncs.com/compatible-mode/v1"

@@ -12,18 +12,22 @@ export const DEFAULT_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/real
 export const DEFAULT_HARNESS_HTTP_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 export const HARNESS_MODULES = ['brain', 'listen', 'speak', 'see']
 export const EMBEDDING_MODEL_TYPES = ['cloud', 'local']
-export const KNOWLEDGE_MODES = ['prompt', 'rag']
+export const KNOWLEDGE_MODES = ['none', 'prompt', 'rag']
+export const KNOWLEDGE_RETRIEVAL_MODES = ['fast', 'deep']
 export const DEFAULT_KNOWLEDGE_MODE = 'prompt'
+export const DEFAULT_KNOWLEDGE_RETRIEVAL_MODE = 'fast'
+export const DEFAULT_SCREEN_VISION_INTERVAL_SECONDS = 5
+export const DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD = 8
 export const DEFAULT_HARNESS_SETTINGS = {
   seeMinIntervalMs: 5000,
   recentConversationCount: 20,
   recentVisionCount: 1,
 }
-// Developer-only diagnostic switch. Keep this out of the UI so it cannot be
-// enabled accidentally in a normal build. When enabled, See bounding boxes
-// are rendered on the transparent overlay but are never composited into an
-// outbound screen frame.
+// Default for the See bounding-box diagnostic switch. The runtime value is
+// controlled from the Abilities page and persisted locally; this remains the
+// fallback when no user preference has been stored yet.
 export const SEE_BBOX_DEBUG_ENABLED = false
+export const SEE_BBOX_DEBUG_STORAGE_KEY = 'cosight.seeBboxDebugEnabled'
 export const DEFAULT_OUTPUT_VOLUME = 48
 export const OUTPUT_VOLUME_STORAGE_KEY = 'cosight.outputVolume'
 export const AUDIO_INPUT_MODES = ['microphone', 'system']
@@ -323,21 +327,27 @@ export function emptyRoleDraft() {
     avatarRemoved: false,
     drawingPolicy: '',
     writingPolicy: '',
-    screenVisionIntervalSec: '5',
-    screenVisionChangeThreshold: '8',
+    screenVisionIntervalSec: String(DEFAULT_SCREEN_VISION_INTERVAL_SECONDS),
+    screenVisionChangeThreshold: String(DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD),
     initiativeTimeoutSec: '10',
     initiativePrompt: '',
     abilities: [...NEW_ROLE_DEFAULT_ABILITY_IDS],
     knowledgeText: '',
     knowledgeFiles: [],
+    knowledgeBuildId: '',
     knowledgeMode: DEFAULT_KNOWLEDGE_MODE,
+    knowledgeRetrievalMode: DEFAULT_KNOWLEDGE_RETRIEVAL_MODE,
     embeddingModelId: '',
     knowledgeStatus: null,
   }
 }
 
 export function normalizeKnowledgeMode(value) {
-  return value === 'rag' ? 'rag' : DEFAULT_KNOWLEDGE_MODE
+  return KNOWLEDGE_MODES.includes(value) ? value : DEFAULT_KNOWLEDGE_MODE
+}
+
+export function normalizeKnowledgeRetrievalMode(value) {
+  return KNOWLEDGE_RETRIEVAL_MODES.includes(value) ? value : DEFAULT_KNOWLEDGE_RETRIEVAL_MODE
 }
 
 export function emptyEmbeddingModelDraft(type = 'cloud') {
@@ -345,7 +355,6 @@ export function emptyEmbeddingModelDraft(type = 'cloud') {
     id: '',
     type: EMBEDDING_MODEL_TYPES.includes(type) ? type : 'cloud',
     alias: '',
-    name: '',
     model: '',
     url: '',
     dimensions: '',
@@ -364,8 +373,10 @@ export function toBase64(buffer) {
 }
 
 export function formatElapsed(seconds) {
-  const minutes = String(Math.floor(seconds / 60)).padStart(2, '0')
-  const remainder = String(seconds % 60).padStart(2, '0')
+  const numericSeconds = Number(seconds)
+  const safeSeconds = Number.isFinite(numericSeconds) ? Math.max(0, Math.floor(numericSeconds)) : 0
+  const minutes = String(Math.floor(safeSeconds / 60)).padStart(2, '0')
+  const remainder = String(safeSeconds % 60).padStart(2, '0')
   return `${minutes}:${remainder}`
 }
 
@@ -506,7 +517,8 @@ export function sessionRoleSnapshot(role) {
     initiativeTimeoutSec: role.initiativeTimeoutSec ?? '',
     initiativePrompt: typeof role.initiativePrompt === 'string' ? role.initiativePrompt : '',
     knowledgeText: typeof role.knowledgeText === 'string' ? role.knowledgeText : '',
-    knowledgeMode: role.knowledgeMode === 'rag' ? 'rag' : 'prompt',
+    knowledgeMode: normalizeKnowledgeMode(role.knowledgeMode),
+    knowledgeRetrievalMode: normalizeKnowledgeRetrievalMode(role.knowledgeRetrievalMode),
     embeddingModelId: typeof role.embeddingModelId === 'string' ? role.embeddingModelId : '',
     knowledgeFiles: Array.isArray(role.knowledgeFiles)
       ? role.knowledgeFiles.map((file) => ({

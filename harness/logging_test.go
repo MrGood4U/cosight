@@ -43,6 +43,20 @@ func TestRuntimeLogLevelDefaultsToInfo(t *testing.T) {
 	}
 }
 
+func TestDiagnosticFailureMarkersUseErrorLevel(t *testing.T) {
+	for _, message := range []string{
+		"knowledge.plan.invalid",
+		"knowledge.plan.fallback",
+		"knowledge.context.timeout",
+		"knowledge.context.cancelled",
+		"knowledge.context.unavailable",
+	} {
+		if level := logLevelForMessage(message); level != logLevelError {
+			t.Fatalf("diagnostic failure %q should be ERROR, got %q", message, level)
+		}
+	}
+}
+
 func TestOutputLogLevelDefaultsToDebug(t *testing.T) {
 	t.Setenv("COSIGHT_LOG_LEVEL", "")
 	if !shouldOutputLog(logLevelDebug) || !shouldOutputLog(logLevelInfo) || !shouldOutputLog(logLevelError) {

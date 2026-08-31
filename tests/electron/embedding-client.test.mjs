@@ -3,8 +3,8 @@ import test from 'node:test'
 import { embedTexts, embeddingModelFingerprint, normalizeEmbeddingModelInput, validateEmbeddingModelUrl } from '../../electron/embedding-client.mjs'
 
 test('embedding client normalizes cloud and local service configuration', () => {
-  assert.deepEqual(normalizeEmbeddingModelInput({ type: 'local', name: 'Local', model: 'embed', url: 'http://127.0.0.1:8080/v1' }), {
-    type: 'local', id: '', alias: '', name: 'Local', model: 'embed', url: 'http://127.0.0.1:8080/v1', dimensions: 0, apiKey: '',
+  assert.deepEqual(normalizeEmbeddingModelInput({ type: 'local', name: 'Legacy config name', model: 'embed', url: 'http://127.0.0.1:8080/v1' }), {
+    type: 'local', id: '', alias: '', model: 'embed', url: 'http://127.0.0.1:8080/v1', dimensions: 0, apiKey: '',
   })
   assert.equal(normalizeEmbeddingModelInput({ type: 'unknown' }).type, 'cloud')
 })
@@ -58,7 +58,7 @@ test('embedding requests stop promptly when the caller aborts a batch', async ()
 })
 
 test('embedding model fingerprint changes when the effective provider configuration changes', () => {
-  const base = { id: 'embed-1', type: 'local', name: 'Local', model: 'embed-v1', url: 'http://127.0.0.1:8080/v1', dimensions: 768 }
+  const base = { id: 'embed-1', type: 'local', model: 'embed-v1', url: 'http://127.0.0.1:8080/v1', dimensions: 768 }
   assert.notEqual(embeddingModelFingerprint(base), embeddingModelFingerprint({ ...base, url: 'http://127.0.0.1:8081/v1' }))
   assert.notEqual(embeddingModelFingerprint(base), embeddingModelFingerprint({ ...base, dimensions: 1024 }))
   assert.equal(embeddingModelFingerprint({ ...base, apiKey: 'one' }), embeddingModelFingerprint({ ...base, apiKey: 'two' }))

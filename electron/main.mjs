@@ -1,15 +1,17 @@
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, safeStorage, screen, session } from 'electron'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 import {
   HARNESS_MODULES,
+  DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
   buildInitiativeCommand,
   configuredHarnessModels,
   configuredHarnessSettings,
+  defaultRoleForRuntime,
   normalizeInitiativeInstructions,
   normalizeInitiativeTimeout,
   normalizeRoleAbilities,
@@ -58,6 +60,7 @@ const MAX_KNOWLEDGE_FILE_BYTES = 10 * 1024 * 1024
 const MAX_KNOWLEDGE_TEXT_BYTES = 2 * 1024 * 1024
 const MAX_KNOWLEDGE_EXTRACT_OUTPUT_BYTES = 2 * 1024 * 1024
 const MAX_KNOWLEDGE_EXTRACT_TIMEOUT_MS = 30_000
+const MODEL_TEST_TIMEOUT_MS = 30_000
 const MAX_PYTHON_STDOUT_BUFFER_BYTES = 2 * 1024 * 1024
 const MAX_PROMPT_KNOWLEDGE_CHARS = 60_000
 const DEFAULT_OUTPUT_LOG_LEVEL = 'DEBUG'
@@ -87,8 +90,10 @@ let owenVisualInterviewPolicyCache
 const knowledgeBuilds = new Map()
 const knowledgeBuildVersions = new Map()
 const knowledgeBuildCancels = new Map()
+const knowledgeBuildArtifacts = new Map()
 const knowledgeDeletingRoles = new Set()
 const knowledgeSearches = new Map()
+const activeModelConnectionTests = new Map()
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
@@ -202,7 +207,7 @@ function shouldOutputLog(level) {
 
 function inferredLogLevel(kind) {
   const normalized = String(kind || '').toLowerCase()
-  for (const marker of ['error', 'failed', 'rejected', 'exception', 'unhandled', 'stderr', 'parse_error', 'send_error', 'kill_error']) {
+  for (const marker of ['error', 'failed', 'rejected', 'invalid', 'fallback', 'timeout', 'cancelled', 'unavailable', 'not_sent', 'dropped', 'exception', 'unhandled', 'stderr', 'parse_error', 'send_error', 'kill_error']) {
     if (normalized.includes(marker)) return 'ERROR'
   }
   return 'INFO'
@@ -278,7 +283,6 @@ function publicEmbeddingModel(model) {
     id: model.id,
     type: model.type === 'local' ? 'local' : 'cloud',
     alias: typeof model.alias === 'string' ? model.alias : '',
-    name: typeof model.name === 'string' ? model.name : '',
     model: typeof model.model === 'string' ? model.model : '',
     url: typeof model.url === 'string' ? model.url : '',
     dimensions: Number.isFinite(Number(model.dimensions)) ? Number(model.dimensions) : 0,
@@ -392,6 +396,8 @@ function normalizeSessionArtifact(value) {
         initiativeTimeoutSec: value.role.initiativeTimeoutSec ?? '',
         initiativePrompt: typeof value.role.initiativePrompt === 'string' ? value.role.initiativePrompt.slice(0, 20000) : '',
         knowledgeText: typeof value.role.knowledgeText === 'string' ? value.role.knowledgeText.slice(0, 50000) : '',
+        knowledgeMode: normalizeKnowledgeMode(value.role.knowledgeMode),
+        knowledgeRetrievalMode: normalizeKnowledgeRetrievalMode(value.role.knowledgeRetrievalMode),
         knowledgeFiles: Array.isArray(value.role.knowledgeFiles)
           ? value.role.knowledgeFiles.slice(0, 100).map((file) => ({
               id: typeof file?.id === 'string' ? file.id.slice(0, 160) : '',
@@ -460,6 +466,7 @@ function publicRole(role) {
   const abilities = normalizeRoleAbilities(role.abilities)
   const screenVisionEnabled = abilities.includes('screenVision')
   const initiativeEnabled = abilities.includes('initiative')
+  const knowledgeMode = normalizeKnowledgeMode(role.knowledgeMode)
   const drawingPolicy = abilities.includes('drawing') ? normalizeRoleText(role.drawingPolicy, 20000) : ''
   const visualInterviewPolicy = builtinVisualInterviewPolicy(role)
   return {
@@ -486,15 +493,20 @@ function publicRole(role) {
     initiativeTimeoutSec: initiativeEnabled ? normalizeInitiativeTimeout(role.initiativeTimeoutSec) : '',
     initiativePrompt: initiativeEnabled ? normalizeRoleText(role.initiativePrompt, 20000) : '',
     knowledgeText: role.knowledgeText || '',
-    knowledgeMode: normalizeKnowledgeMode(role.knowledgeMode),
+    knowledgeMode,
+    knowledgeRetrievalMode: normalizeKnowledgeRetrievalMode(role.knowledgeRetrievalMode),
     embeddingModelId: typeof role.embeddingModelId === 'string' ? role.embeddingModelId : '',
-    knowledgeStatus: role.isBuiltin ? {
+    knowledgeStatus: role.isBuiltin && knowledgeMode !== 'rag' ? {
       status: 'not_indexed', sourceCount: 0, chunkCount: 0, embeddingModelId: '', embeddingFingerprint: '', embeddingDimension: 0, error: '',
     } : getKnowledgeStatus(roleKnowledgeDatabasePath(role.id)),
     knowledgeFiles: Array.isArray(role.knowledgeFiles)
       ? role.knowledgeFiles.map(({ id, name, size, type }) => ({ id, name, size, type }))
       : [],
   }
+}
+
+function normalizeKnowledgeRetrievalMode(value) {
+  return value === 'deep' ? 'deep' : 'fast'
 }
 
 function normalizeAvatarData(value) {
@@ -532,19 +544,19 @@ function resolveRoleLanguage(role, key) {
 }
 
 function normalizeRoleForRuntime(role) {
-  if (!role || typeof role !== 'object') return null
-  const abilities = normalizeRoleAbilities(role.abilities)
+  const source = role && typeof role === 'object' ? role : defaultRoleForRuntime()
+  const abilities = normalizeRoleAbilities(source.abilities)
   const screenVisionEnabled = abilities.includes('screenVision')
   return {
-    ...role,
+    ...source,
     abilities,
-    listeningLanguage: resolveRoleLanguage(role, 'listeningLanguage'),
-    outputLanguage: resolveRoleLanguage(role, 'outputLanguage'),
-    writingPolicy: normalizeRoleText(role.writingPolicy || role.subtitlesPolicy, 20000),
-    speechStyle: normalizeRoleText(role.speechStyle, 4000),
-    screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(role.screenVisionIntervalSec) : '',
-    screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(role.screenVisionChangeThreshold) : '',
-    voice: normalizeRoleVoice(role.voice),
+    listeningLanguage: resolveRoleLanguage(source, 'listeningLanguage'),
+    outputLanguage: resolveRoleLanguage(source, 'outputLanguage'),
+    writingPolicy: normalizeRoleText(source.writingPolicy || source.subtitlesPolicy, 20000),
+    speechStyle: normalizeRoleText(source.speechStyle, 4000),
+    screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(source.screenVisionIntervalSec) : '',
+    screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(source.screenVisionChangeThreshold) : '',
+    voice: normalizeRoleVoice(source.voice),
   }
 }
 
@@ -647,6 +659,52 @@ function roleKnowledgeDatabasePath(roleId) {
   return join(roleKnowledgeDirectory(roleId), 'knowledge.db')
 }
 
+function knowledgeStagingRoot() {
+  return join(app.getPath('userData'), 'roles', '.staging')
+}
+
+function recoverKnowledgeBackups() {
+  const rolesRoot = join(app.getPath('userData'), 'roles')
+  if (!existsSync(rolesRoot)) return
+  let roleDirectories
+  try {
+    roleDirectories = readdirSync(rolesRoot, { withFileTypes: true })
+  } catch (error) {
+    debugLog('knowledge.backup.scan_error', { error: serializeError(error) }, 'ERROR')
+    return
+  }
+  for (const entry of roleDirectories) {
+    if (!entry.isDirectory() || entry.name === '.staging') continue
+    const roleDirectory = join(rolesRoot, entry.name)
+    const targetDirectory = join(roleDirectory, 'knowledge')
+    let backupNames
+    try {
+      backupNames = readdirSync(roleDirectory).filter((name) => name.startsWith('.knowledge-backup-'))
+    } catch (error) {
+      debugLog('knowledge.backup.role_scan_error', { roleDirectory, error: serializeError(error) }, 'ERROR')
+      continue
+    }
+    for (const backupName of backupNames) {
+      const backupDirectory = join(roleDirectory, backupName)
+      try {
+        if (existsSync(targetDirectory)) rmSync(backupDirectory, { recursive: true, force: true })
+        else renameSync(backupDirectory, targetDirectory)
+      } catch (error) {
+        debugLog('knowledge.backup.recover_error', { roleDirectory, backupName, error: serializeError(error) }, 'ERROR')
+      }
+    }
+  }
+}
+
+function cleanupKnowledgeStaging() {
+  try {
+    recoverKnowledgeBackups()
+    rmSync(knowledgeStagingRoot(), { recursive: true, force: true })
+  } catch (error) {
+    debugLog('knowledge.staging.cleanup_error', { error: serializeError(error) }, 'ERROR')
+  }
+}
+
 function safeKnowledgeFileName(value) {
   const name = basename(String(value || 'knowledge.txt'))
   return name.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'knowledge.txt'
@@ -692,8 +750,8 @@ function readTextFilePreview(filePath, maxChars = 500_000) {
   }
 }
 
-function persistRoleFiles(roleId, incomingFiles, existingFiles) {
-  const directory = roleKnowledgeDirectory(roleId)
+function persistRoleFiles(roleId, incomingFiles, existingFiles, directoryOverride = '') {
+  const directory = directoryOverride || roleKnowledgeDirectory(roleId)
   mkdirSync(directory, { recursive: true })
   const incomingList = (Array.isArray(incomingFiles) ? incomingFiles : []).slice(0, MAX_KNOWLEDGE_SOURCES)
   const previous = new Map((Array.isArray(existingFiles) ? existingFiles : []).map((file) => [file.id, file]))
@@ -762,7 +820,263 @@ function persistRoleFiles(roleId, incomingFiles, existingFiles) {
   return savedFiles
 }
 
+function remapKnowledgeFilePaths(files, sourceDirectory, targetDirectory) {
+  const resolvedSource = resolve(sourceDirectory).toLowerCase()
+  const resolvedTarget = resolve(targetDirectory)
+  return (Array.isArray(files) ? files : []).map((file) => {
+    const filePath = typeof file?.path === 'string' ? file.path : ''
+    const resolvedPath = filePath ? resolve(filePath).toLowerCase() : ''
+    if (!resolvedPath || (resolvedPath !== resolvedSource && !resolvedPath.startsWith(`${resolvedSource}${sep}`))) {
+      return { ...file }
+    }
+    return { ...file, path: join(resolvedTarget, basename(filePath)) }
+  })
+}
+
+function removeKnowledgeBuildArtifact(artifact) {
+  if (!artifact?.stagingDirectory) return
+  try {
+    rmSync(artifact.stagingDirectory, { recursive: true, force: true })
+  } catch (error) {
+    debugLog('knowledge.staging.remove_error', {
+      roleId: artifact.roleId,
+      buildId: artifact.buildId,
+      directory: artifact.stagingDirectory,
+      error: serializeError(error),
+    }, 'ERROR')
+  }
+}
+
+async function discardKnowledgeBuildArtifact(roleId, buildId = '') {
+  const artifact = knowledgeBuildArtifacts.get(roleId)
+  if (!artifact || (buildId && artifact.buildId !== buildId)) return false
+  invalidateKnowledgeBuild(roleId)
+  const pendingBuild = knowledgeBuilds.get(roleId)
+  if (pendingBuild) await pendingBuild.catch(() => {})
+  if (knowledgeBuildArtifacts.get(roleId) === artifact) {
+    knowledgeBuildArtifacts.delete(roleId)
+    removeKnowledgeBuildArtifact(artifact)
+  }
+  return true
+}
+
+function publishKnowledgeBuild(artifact, roleId) {
+  const sourceDirectory = artifact?.knowledgeDirectory
+  const targetDirectory = roleKnowledgeDirectory(roleId)
+  if (!sourceDirectory || !existsSync(join(sourceDirectory, 'knowledge.db'))) {
+    throw new Error('知识库构建产物不存在，无法保存角色。')
+  }
+  mkdirSync(dirname(targetDirectory), { recursive: true })
+  mkdirSync(knowledgeStagingRoot(), { recursive: true })
+  const backupDirectory = existsSync(targetDirectory)
+    ? join(dirname(targetDirectory), `.knowledge-backup-${randomUUID()}`)
+    : ''
+  if (backupDirectory) renameSync(targetDirectory, backupDirectory)
+  try {
+    renameSync(sourceDirectory, targetDirectory)
+  } catch (error) {
+    if (backupDirectory && existsSync(backupDirectory) && !existsSync(targetDirectory)) {
+      try { renameSync(backupDirectory, targetDirectory) } catch (restoreError) {
+        debugLog('knowledge.publish.restore_error', { roleId, error: serializeError(restoreError) }, 'ERROR')
+      }
+    }
+    throw error
+  }
+  let rolledBack = false
+  return {
+    files: remapKnowledgeFilePaths(artifact.files, sourceDirectory, targetDirectory),
+    commit() {
+      if (backupDirectory) {
+        try { rmSync(backupDirectory, { recursive: true, force: true }) } catch (error) {
+          debugLog('knowledge.publish.backup_cleanup_error', { roleId, error: serializeError(error) }, 'ERROR')
+        }
+      }
+      removeKnowledgeBuildArtifact(artifact)
+    },
+    rollback() {
+      if (rolledBack) return
+      rolledBack = true
+      if (existsSync(targetDirectory)) renameSync(targetDirectory, sourceDirectory)
+      if (backupDirectory && existsSync(backupDirectory)) renameSync(backupDirectory, targetDirectory)
+    },
+  }
+}
+
 const TEXT_KNOWLEDGE_SUFFIXES = new Set(['.txt', '.md', '.csv', '.json'])
+
+function normalizeModelTestRequestId(value) {
+  if (typeof value !== 'string') return ''
+  const requestId = value.trim()
+  return requestId.length > 0 && requestId.length <= 120 ? requestId : ''
+}
+
+function cancelModelConnectionTest(requestId) {
+  const normalizedId = normalizeModelTestRequestId(requestId)
+  const active = normalizedId ? activeModelConnectionTests.get(normalizedId) : null
+  if (!active) return false
+  active.cancel()
+  return true
+}
+
+function cancelAllModelConnectionTests() {
+  for (const active of activeModelConnectionTests.values()) active.cancel()
+}
+
+function runPythonModelConnectionTest(model, apiKey, requestId = '') {
+  requestId = normalizeModelTestRequestId(requestId)
+  const { command, args, cwd, packaged } = pythonCommand('cosight-bridge')
+  const script = join(__dirname, '..', 'python', 'qwen_bridge.py')
+  const invocationArgs = packaged ? [...args, '--test-connection'] : [...args, '-u', script, '--test-connection']
+  return new Promise((resolve) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timeout
+    let registration
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      if (requestId && activeModelConnectionTests.get(requestId) === registration) {
+        activeModelConnectionTests.delete(requestId)
+      }
+      resolve(result)
+    }
+    let child
+    try {
+      child = spawn(command, invocationArgs, {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: {
+          ...process.env,
+          DASHSCOPE_API_KEY: apiKey,
+          COSIGHT_DEBUG_LOG: getElectronLogPath(),
+          COSIGHT_LOG_LEVEL: outputLogLevel(),
+        },
+      })
+    } catch (error) {
+      finish({ ok: false, error: error.message })
+      return
+    }
+    const terminate = (message) => {
+      if (settled) return
+      try { child.kill() } catch { /* The process may already have exited. */ }
+      finish({ ok: false, error: message })
+    }
+    child.stdout.on('data', (chunk) => {
+      if (Buffer.byteLength(stdout, 'utf8') + chunk.length > MAX_KNOWLEDGE_EXTRACT_OUTPUT_BYTES) {
+        terminate('模型连接测试输出过大，已终止处理。')
+        return
+      }
+      stdout += chunk.toString('utf8')
+    })
+    child.stderr.on('data', (chunk) => {
+      if (Buffer.byteLength(stderr, 'utf8') + chunk.length > MAX_KNOWLEDGE_EXTRACT_OUTPUT_BYTES) {
+        terminate('模型连接测试错误输出过大，已终止处理。')
+        return
+      }
+      stderr += chunk.toString('utf8')
+    })
+    child.on('error', (error) => finish({ ok: false, error: error.message }))
+    child.on('close', (code) => {
+      const results = stdout.split(/\r?\n/).map((line) => {
+        try { return JSON.parse(line) } catch { return null }
+      }).filter((result) => result && typeof result.ok === 'boolean')
+      const result = results.at(-1)
+      if (result) finish(result)
+      else finish({ ok: false, error: stderr.trim() || `模型连接测试失败（${code}）。` })
+    })
+    timeout = setTimeout(() => terminate(`模型连接测试超时（${MODEL_TEST_TIMEOUT_MS} ms）。`), MODEL_TEST_TIMEOUT_MS)
+    registration = { cancel: () => terminate('模型连接测试已取消。') }
+    if (requestId) {
+      const previous = activeModelConnectionTests.get(requestId)
+      previous?.cancel()
+      activeModelConnectionTests.set(requestId, registration)
+    }
+    child.stdin.end(JSON.stringify({ model: model.name, url: model.url }))
+  })
+}
+
+
+function runHarnessModelConnectionTest(model, apiKey, requestId = '') {
+  requestId = normalizeModelTestRequestId(requestId)
+  const { command, args, cwd } = harnessCommand()
+  return new Promise((resolve) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timeout
+    let registration
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      if (requestId && activeModelConnectionTests.get(requestId) === registration) {
+        activeModelConnectionTests.delete(requestId)
+      }
+      resolve(result)
+    }
+    let child
+    try {
+      child = spawn(command, [...args, '--test-connection'], {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: {
+          ...process.env,
+          DASHSCOPE_API_KEY: apiKey,
+          COSIGHT_DEBUG_LOG: getElectronLogPath(),
+          COSIGHT_LOG_LEVEL: outputLogLevel(),
+        },
+      })
+    } catch (error) {
+      finish({ ok: false, error: error.message })
+      return
+    }
+    const terminate = (message) => {
+      if (settled) return
+      try { child.kill() } catch { /* The process may have already exited. */ }
+      finish({ ok: false, error: message })
+    }
+    child.stdout.on('data', (chunk) => {
+      if (Buffer.byteLength(stdout, 'utf8') + chunk.length > MAX_KNOWLEDGE_EXTRACT_OUTPUT_BYTES) {
+        terminate('Harness model connection test output is too large.')
+        return
+      }
+      stdout += chunk.toString('utf8')
+    })
+    child.stderr.on('data', (chunk) => {
+      if (Buffer.byteLength(stderr, 'utf8') + chunk.length > MAX_KNOWLEDGE_EXTRACT_OUTPUT_BYTES) {
+        terminate('Harness model connection test error output is too large.')
+        return
+      }
+      stderr += chunk.toString('utf8')
+    })
+    child.on('error', (error) => finish({ ok: false, error: error.message }))
+    child.on('close', (code) => {
+      const results = stdout.split(/\r?\n/).map((line) => {
+        try { return JSON.parse(line) } catch { return null }
+      }).filter((result) => result && typeof result.ok === 'boolean')
+      const result = results.at(-1)
+      if (result) finish(result)
+      else finish({ ok: false, error: stderr.trim() || 'Harness model connection test failed (' + code + ').' })
+    })
+    timeout = setTimeout(() => terminate('Harness model connection test timed out (' + MODEL_TEST_TIMEOUT_MS + ' ms).'), MODEL_TEST_TIMEOUT_MS)
+    registration = { cancel: () => terminate('Harness model connection test was cancelled.') }
+    if (requestId) {
+      const previous = activeModelConnectionTests.get(requestId)
+      previous?.cancel()
+      activeModelConnectionTests.set(requestId, registration)
+    }
+    child.stdin.end(JSON.stringify({
+      module: model.module,
+      name: model.name,
+      url: model.url,
+      voice: model.voice,
+    }))
+  })
+}
 
 function runPythonKnowledgeExtract(fileInfo) {
   const { command, args, cwd, packaged } = pythonCommand('cosight-bridge')
@@ -844,7 +1158,7 @@ async function extractKnowledgeFileText(fileInfo, maxChars = MAX_KNOWLEDGE_SOURC
 }
 
 async function hydratePromptKnowledge(role) {
-  if (!role || normalizeKnowledgeMode(role.knowledgeMode) === 'rag') return role
+  if (!role || normalizeKnowledgeMode(role.knowledgeMode) !== 'prompt') return role
   const files = []
   let remaining = MAX_PROMPT_KNOWLEDGE_CHARS
   const pastedLength = String(role.knowledgeText || '').trim().length
@@ -863,22 +1177,6 @@ async function hydratePromptKnowledge(role) {
     }
   }
   return files.length ? { ...role, knowledgeFiles: files } : role
-}
-
-function knowledgeFilesFingerprint(files) {
-  return JSON.stringify((Array.isArray(files) ? files : []).map((file) => ({
-    id: file?.id || '',
-    name: file?.name || '',
-    size: Number(file?.size) || 0,
-    hash: file?.hash || '',
-  })))
-}
-
-function knowledgeMaterialChanged(previous, next) {
-  return String(previous?.knowledgeText || '') !== String(next?.knowledgeText || '')
-    || knowledgeFilesFingerprint(previous?.knowledgeFiles) !== knowledgeFilesFingerprint(next?.knowledgeFiles)
-    || normalizeKnowledgeMode(previous?.knowledgeMode) !== normalizeKnowledgeMode(next?.knowledgeMode)
-    || String(previous?.embeddingModelId || '') !== String(next?.embeddingModelId || '')
 }
 
 function knowledgeModelFingerprint(model) {
@@ -900,16 +1198,23 @@ function decryptEmbeddingModel(configModel) {
 
 function emitKnowledgeStatus(roleId, status) {
   if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.webContents.send('knowledge:status', { roleId, ...status })
+  const stagedBuildId = knowledgeBuildArtifacts.get(roleId)?.buildId || ''
+  mainWindow.webContents.send('knowledge:status', {
+    roleId,
+    ...(stagedBuildId ? { knowledgeBuildId: stagedBuildId, staged: true } : {}),
+    ...status,
+  })
 }
 
-async function rebuildRoleKnowledge(role, version, signal) {
+async function rebuildRoleKnowledge(role, version, signal, roleOverride = null, dbPathOverride = '') {
   const roleId = typeof role === 'string' ? role : role?.id || ''
   if (!roleId || signal?.aborted || knowledgeDeletingRoles.has(roleId) || knowledgeBuildVersions.get(roleId) !== version) return
-  const dbPath = roleKnowledgeDatabasePath(roleId)
+  const dbPath = dbPathOverride || roleKnowledgeDatabasePath(roleId)
   const config = readConfig()
-  const currentRole = allRoles(config).find((item) => item.id === roleId)
-  if (!currentRole || currentRole.isBuiltin || normalizeKnowledgeMode(currentRole.knowledgeMode) !== 'rag') return
+  const currentRole = roleOverride?.id === roleId
+    ? roleOverride
+    : allRoles(config).find((item) => item.id === roleId)
+  if (!currentRole || normalizeKnowledgeMode(currentRole.knowledgeMode) !== 'rag') return
   const embeddingRecord = configuredEmbeddingModels(config).find((model) => model.id === currentRole.embeddingModelId)
   const embeddingModel = decryptEmbeddingModel(embeddingRecord)
   if (!embeddingModel) throw new Error('角色未配置有效的 Embedding 模型。')
@@ -921,7 +1226,7 @@ async function rebuildRoleKnowledge(role, version, signal) {
     knowledgeSourceFingerprint: sourceFingerprint,
     error: '',
   })
-  emitKnowledgeStatus(roleId, getKnowledgeStatus(dbPath))
+  emitKnowledgeStatus(roleId, { ...getKnowledgeStatus(dbPath), status: 'indexing', progress: 0, processedChunks: 0, totalChunks: 0 })
   const sources = []
   const sourceErrors = []
   let remainingCharacters = MAX_KNOWLEDGE_TOTAL_CHARS
@@ -959,10 +1264,11 @@ async function rebuildRoleKnowledge(role, version, signal) {
   const canPublish = () => {
     if (signal?.aborted || knowledgeDeletingRoles.has(roleId) || knowledgeBuildVersions.get(roleId) !== version) return false
     const publishConfig = readConfig()
-    const publishRole = allRoles(publishConfig).find((item) => item.id === roleId)
+    const publishRole = roleOverride?.id === roleId
+      ? roleOverride
+      : allRoles(publishConfig).find((item) => item.id === roleId)
     return Boolean(
       publishRole
-      && !publishRole.isBuiltin
       && normalizeKnowledgeMode(publishRole.knowledgeMode) === 'rag'
       && publishRole.embeddingModelId === embeddingModel.id
       && knowledgeSourceFingerprint(publishRole) === sourceFingerprint,
@@ -977,18 +1283,29 @@ async function rebuildRoleKnowledge(role, version, signal) {
     sources,
     sourceErrors,
     embed: (texts, options) => embedTexts(embeddingModel, texts, fetch, options),
+    onProgress: ({ progress, processedChunks, totalChunks }) => {
+      if (signal?.aborted || knowledgeDeletingRoles.has(roleId) || knowledgeBuildVersions.get(roleId) !== version) return
+      emitKnowledgeStatus(roleId, {
+        ...getKnowledgeStatus(dbPath),
+        status: 'indexing',
+        progress,
+        processedChunks,
+        totalChunks,
+      })
+    },
     canPublish,
     signal,
   })
   if (!status) return
   const finalConfig = readConfig()
-  const finalRole = allRoles(finalConfig).find((item) => item.id === roleId)
+  const finalRole = roleOverride?.id === roleId
+    ? roleOverride
+    : allRoles(finalConfig).find((item) => item.id === roleId)
   if (
     knowledgeDeletingRoles.has(roleId)
     || signal?.aborted
     || knowledgeBuildVersions.get(roleId) !== version
     || !finalRole
-    || finalRole.isBuiltin
     || normalizeKnowledgeMode(finalRole.knowledgeMode) !== 'rag'
     || knowledgeSourceFingerprint(finalRole) !== sourceFingerprint
   ) return
@@ -1000,10 +1317,10 @@ async function rebuildRoleKnowledge(role, version, signal) {
     embeddingDimension: status.embeddingDimension,
     status: status.status,
   }, 'INFO')
-  emitKnowledgeStatus(roleId, status)
+  emitKnowledgeStatus(roleId, { ...status, progress: 100, processedChunks: status.chunkCount, totalChunks: status.chunkCount })
 }
 
-function scheduleKnowledgeRebuild(role) {
+function scheduleKnowledgeRebuild(role, { roleOverride = null, dbPath = '' } = {}) {
   const roleId = typeof role === 'string' ? role : role?.id || ''
   if (
     !roleId
@@ -1018,20 +1335,21 @@ function scheduleKnowledgeRebuild(role) {
   const previous = knowledgeBuilds.get(roleId) || Promise.resolve()
   const task = previous
     .catch(() => {})
-    .then(() => rebuildRoleKnowledge(roleId, version, controller.signal))
+    .then(() => rebuildRoleKnowledge(roleId, version, controller.signal, roleOverride, dbPath))
     .catch((error) => {
       const currentConfig = readConfig()
-      const currentRole = allRoles(currentConfig).find((item) => item.id === roleId)
+      const currentRole = roleOverride?.id === roleId
+        ? roleOverride
+        : allRoles(currentConfig).find((item) => item.id === roleId)
       if (
         knowledgeDeletingRoles.has(roleId)
         || knowledgeBuildVersions.get(roleId) !== version
         || !currentRole
-        || currentRole.isBuiltin
         || normalizeKnowledgeMode(currentRole.knowledgeMode) !== 'rag'
       ) return
-      const dbPath = roleKnowledgeDatabasePath(roleId)
+      const statusPath = dbPath || roleKnowledgeDatabasePath(roleId)
       try {
-        const status = updateKnowledgeStatus(dbPath, 'error', { error: error.message })
+        const status = updateKnowledgeStatus(statusPath, 'error', { error: error.message })
         debugLog('knowledge.index.failed', { roleId, error: serializeError(error), status }, 'ERROR')
         emitKnowledgeStatus(roleId, status)
       } catch (statusError) {
@@ -1050,16 +1368,16 @@ function scheduleKnowledgeRebuild(role) {
   return version
 }
 
-function knowledgeIndexNeedsRebuild(role, config = readConfig()) {
-  if (!role || role.isBuiltin || normalizeKnowledgeMode(role.knowledgeMode) !== 'rag') return false
+function knowledgeIndexNeedsRebuild(role, config = readConfig(), dbPath = roleKnowledgeDatabasePath(role?.id)) {
+  if (!role || normalizeKnowledgeMode(role.knowledgeMode) !== 'rag') return false
   const modelRecord = configuredEmbeddingModels(config).find((model) => model.id === role.embeddingModelId)
   if (!modelRecord) return true
   const model = decryptEmbeddingModel(modelRecord)
   if (!model) return true
-  const dbPath = roleKnowledgeDatabasePath(role.id)
   if (!existsSync(dbPath)) return true
   const status = getKnowledgeStatus(dbPath)
-  if (!['ready', 'ready_with_errors', 'empty'].includes(status.status)) return true
+  if (!['ready', 'ready_with_errors'].includes(status.status)) return true
+  if (status.sourceCount <= 0 || status.chunkCount <= 0) return true
   if (status.embeddingModelId !== model.id) return true
   if (status.embeddingFingerprint !== knowledgeModelFingerprint(model)) return true
   if (status.knowledgeSourceFingerprint !== knowledgeSourceFingerprint(role)) return true
@@ -1184,23 +1502,75 @@ async function handleLegacyKnowledgeQuery(payload) {
 
 async function handleHarnessKnowledgeQuery(payload) {
   const eventId = typeof payload?.eventId === 'string' ? payload.eventId : ''
+  const knowledgeRequestId = typeof payload?.knowledgeRequestId === 'string' ? payload.knowledgeRequestId : eventId
+  const turnId = typeof payload?.turnId === 'string' ? payload.turnId : ''
+  const brainRequestId = typeof payload?.brainRequestId === 'string' ? payload.brainRequestId : turnId
+  const plannerRequestId = typeof payload?.plannerRequestId === 'string' ? payload.plannerRequestId : ''
   const roleId = typeof payload?.roleId === 'string' ? payload.roleId : ''
   const query = typeof payload?.query === 'string' ? payload.query.trim().slice(0, 20_000) : ''
-  if (!eventId) return
+  const intent = typeof payload?.intent === 'string' ? payload.intent.trim().slice(0, 120) : ''
+  const focus = Array.isArray(payload?.focus)
+    ? payload.focus.filter((item) => typeof item === 'string').map((item) => item.trim().slice(0, 120)).filter(Boolean).slice(0, 8)
+    : []
+  const requestFields = {
+    eventId,
+    knowledgeRequestId,
+    turnId,
+    brainRequestId,
+    plannerRequestId,
+    roleId,
+    intent,
+    focus,
+    queryBytes: query.length,
+  }
+  if (!eventId || !query) {
+    debugLog('knowledge.query.rejected', { ...requestFields, reason: 'missing_event_or_query' }, 'ERROR')
+    return
+  }
+  debugLog('knowledge.query.started', requestFields)
   try {
     const matches = await retrieveKnowledgeContext(roleId, query)
     const status = getKnowledgeStatus(roleKnowledgeDatabasePath(roleId))
-    sendHarness({ type: 'knowledge.context', eventId, matches, status: status.status })
-    debugLog('knowledge.query.completed', {
-      roleId,
+    const sent = sendHarness({
+      type: 'knowledge.context',
       eventId,
-      queryLength: query.length,
+      knowledgeRequestId,
+      turnId,
+      brainRequestId,
+      plannerRequestId,
+      roleId,
+      matches,
+      status: status.status,
+    })
+    debugLog('knowledge.query.completed', {
+      ...requestFields,
       matchCount: matches.length,
       status: status.status,
+      knowledgeUsed: ['ready', 'ready_with_errors'].includes(status.status) && matches.length > 0,
+      sent,
     }, 'DEBUG')
+    if (!sent) {
+      debugLog('knowledge.query.forward_failed', {
+        ...requestFields,
+        matchCount: matches.length,
+        status: status.status,
+        reason: 'harness_stdin_not_writable',
+      }, 'ERROR')
+    }
   } catch (error) {
-    sendHarness({ type: 'knowledge.context', eventId, matches: [], status: 'error', error: error.message })
-    debugLog('knowledge.query.failed', { roleId, eventId, error: serializeError(error) }, 'ERROR')
+    const sent = sendHarness({
+      type: 'knowledge.context',
+      eventId,
+      knowledgeRequestId,
+      turnId,
+      brainRequestId,
+      plannerRequestId,
+      roleId,
+      matches: [],
+      status: 'error',
+      error: error.message,
+    })
+    debugLog('knowledge.query.failed', { ...requestFields, sent, error: serializeError(error) }, 'ERROR')
   }
 }
 
@@ -1568,6 +1938,11 @@ function sendHarness(command) {
         type,
         mode: command?.mode,
         requestId: command?.requestId,
+        turnId: command?.turnId,
+        knowledgeRequestId: command?.knowledgeRequestId,
+        brainRequestId: command?.brainRequestId,
+        plannerRequestId: command?.plannerRequestId,
+        eventId: command?.eventId,
         bytes: typeof command?.data === 'string' ? command.data.length : undefined,
         reason: 'stdin_not_writable',
       })
@@ -1583,6 +1958,11 @@ function sendHarness(command) {
         actionId: command.actionId,
         mode: command.mode,
         requestId: command.requestId,
+        eventId: command.eventId,
+        turnId: command.turnId,
+        knowledgeRequestId: command.knowledgeRequestId,
+        brainRequestId: command.brainRequestId,
+        plannerRequestId: command.plannerRequestId,
         bytes: typeof command.data === 'string' ? command.data.length : undefined,
       })
     }
@@ -1872,6 +2252,7 @@ function startHarness(config, harnessModels) {
       recentConversationCount: config?.recentConversationCount,
       recentVisionCount: config?.recentVisionCount,
       knowledgeMode: normalizeKnowledgeMode(config?.role?.knowledgeMode),
+      knowledgeRetrievalMode: normalizeKnowledgeRetrievalMode(config?.role?.knowledgeRetrievalMode),
       initiativeEnabled: Boolean(config?.initiativeEnabled),
       listeningEnabled: Boolean(config?.listeningEnabled),
       speakingEnabled: Boolean(config?.speakingEnabled),
@@ -1948,7 +2329,95 @@ async function createWindow() {
   }
 }
 
+function prepareRoleRecord(roleInput, config = readConfig(), { persistFiles = true } = {}) {
+  if (!roleInput || typeof roleInput !== 'object') return { ok: false, error: '角色配置无效。' }
+  const name = normalizeRoleText(roleInput.name, 80)
+  if (!name) return { ok: false, error: '角色名称不能为空。' }
+  const roles = configuredRoles(config)
+  const existingIndex = roles.findIndex((role) => role.id === roleInput.id)
+  const existing = existingIndex >= 0
+    ? roles[existingIndex]
+    : allRoles(config).find((role) => role.id === roleInput.id)
+  const requestedId = typeof roleInput.id === 'string' ? roleInput.id.trim() : ''
+  const id = existing?.id || (/^[a-zA-Z0-9_-]{1,120}$/.test(requestedId) ? requestedId : randomUUID())
+  const isBuiltin = Boolean(existing?.isBuiltin)
+  const abilities = normalizeRoleAbilities(roleInput.abilities)
+  const screenVisionEnabled = abilities.includes('screenVision')
+  const initiativeEnabled = abilities.includes('initiative')
+  const legacyLanguage = normalizeRoleLanguage(roleInput.language, normalizeRoleLanguage(existing?.language))
+  const listeningLanguage = normalizeRoleLanguage(
+    roleInput.listeningLanguage,
+    normalizeRoleLanguage(existing?.listeningLanguage, legacyLanguage),
+  )
+  const outputLanguage = normalizeRoleLanguage(
+    roleInput.outputLanguage,
+    normalizeRoleLanguage(existing?.outputLanguage, legacyLanguage),
+  )
+  const knowledgeMode = normalizeKnowledgeMode(roleInput.knowledgeMode || existing?.knowledgeMode)
+  const knowledgeRetrievalMode = normalizeKnowledgeRetrievalMode(roleInput.knowledgeRetrievalMode || existing?.knowledgeRetrievalMode)
+  const embeddingModelId = typeof roleInput.embeddingModelId === 'string'
+    ? roleInput.embeddingModelId.trim()
+    : (existing?.embeddingModelId || '')
+  if (knowledgeMode === 'rag' && !configuredEmbeddingModels(config).some((model) => model.id === embeddingModelId)) {
+    return { ok: false, error: '使用知识库检索前，请先选择一个有效的 Embedding 模型。' }
+  }
+  const incomingKnowledgeFiles = (Array.isArray(roleInput.knowledgeFiles) ? roleInput.knowledgeFiles : [])
+    .slice(0, MAX_KNOWLEDGE_SOURCES)
+    .map((file) => {
+      const previousFile = existing?.knowledgeFiles?.find((item) => item?.id === file?.id)
+      return {
+        ...(previousFile || {}),
+        ...(file || {}),
+        path: typeof file?.path === 'string' && file.path ? file.path : (previousFile?.path || ''),
+        hash: typeof file?.hash === 'string' && file.hash ? file.hash : (previousFile?.hash || ''),
+        size: Number.isFinite(Number(file?.size)) && Number(file.size) > 0
+          ? Number(file.size)
+          : Number(previousFile?.size) || 0,
+      }
+    })
+  const nextRole = {
+    id,
+    isBuiltin,
+    name,
+    identity: normalizeRoleText(roleInput.identity),
+    goal: normalizeRoleText(roleInput.goal),
+    corePrinciples: normalizeRoleText(roleInput.corePrinciples),
+    behavior: normalizeRoleText(roleInput.behavior),
+    workflow: normalizeRoleText(roleInput.workflow),
+    constraints: normalizeRoleText(roleInput.constraints),
+    listeningLanguage,
+    outputLanguage,
+    voice: normalizeRoleVoice(roleInput.voice),
+    speechStyle: normalizeRoleText(roleInput.speechStyle, 4000),
+    avatar: roleInput.avatarRemoved ? '' : (normalizeAvatarData(roleInput.avatar) || normalizeAvatarData(existing?.avatar)),
+    avatarName: roleInput.avatarRemoved ? '' : (normalizeRoleText(roleInput.avatarName, 160) || existing?.avatarName || ''),
+    abilities,
+    drawingPolicy: abilities.includes('drawing') ? normalizeRoleText(roleInput.drawingPolicy, 20000) : '',
+    // Keep this field internally so legacy writing guidance survives, but
+    // expose and control it through the unified Drawing capability.
+    writingPolicy: abilities.includes('drawing')
+      ? normalizeRoleText(roleInput.writingPolicy || existing?.writingPolicy || roleInput.subtitlesPolicy, 20000)
+      : '',
+    screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(roleInput.screenVisionIntervalSec) : '',
+    screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(roleInput.screenVisionChangeThreshold) : '',
+    initiativeTimeoutSec: initiativeEnabled ? normalizeInitiativeTimeout(roleInput.initiativeTimeoutSec) : '',
+    initiativePrompt: initiativeEnabled ? normalizeRoleText(roleInput.initiativePrompt, 20000) : '',
+    knowledgeText: normalizeRoleText(roleInput.knowledgeText, 50000),
+    knowledgeMode,
+    knowledgeRetrievalMode,
+    embeddingModelId: knowledgeMode === 'rag' ? embeddingModelId : '',
+    knowledgeFiles: persistFiles
+      ? persistRoleFiles(id, incomingKnowledgeFiles, existing?.knowledgeFiles)
+      : incomingKnowledgeFiles,
+  }
+  return { ok: true, config, roles, existingIndex, existing, role: nextRole }
+}
+
 app.whenReady().then(async () => {
+  // A renderer can disappear while a manual build is running. Any staged
+  // artifacts from that previous process are never part of the saved config,
+  // so they are safe to remove on the next launch.
+  cleanupKnowledgeStaging()
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
     desktopCapturer.getSources({ types: ['screen', 'window'], fetchWindowIcons: false }).then((sources) => {
       const selected = sources.find((source) => source.id === selectedDisplaySourceId)
@@ -2023,117 +2492,172 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('roles:preview-prompt', (_event, roleInput) => runPromptPreview(roleInput))
   ipcMain.handle('roles:save', async (_event, roleInput) => {
-    if (!roleInput || typeof roleInput !== 'object') return { ok: false, error: '角色配置无效。' }
-    const name = normalizeRoleText(roleInput.name, 80)
-    if (!name) return { ok: false, error: '角色名称不能为空。' }
-    if (roleInput.isBuiltin) {
-      return { ok: false, error: '官方示例角色不可编辑，请新增一个角色进行修改。' }
-    }
     const config = readConfig()
-    const roles = configuredRoles(config)
-    const existingIndex = roles.findIndex((role) => role.id === roleInput.id)
-    const existing = existingIndex >= 0 ? roles[existingIndex] : undefined
-    const id = existing?.id || randomUUID()
+    const prepared = prepareRoleRecord(roleInput, config, { persistFiles: false })
+    if (!prepared.ok) return prepared
+    const { roles, existing, existingIndex } = prepared
+    let nextRole = prepared.role
+    const id = nextRole.id
     if (knowledgeDeletingRoles.has(id)) return { ok: false, error: '这个角色正在删除，请稍后重试。' }
-    const abilities = normalizeRoleAbilities(roleInput.abilities)
-    const screenVisionEnabled = abilities.includes('screenVision')
-    const initiativeEnabled = abilities.includes('initiative')
-    const legacyLanguage = normalizeRoleLanguage(roleInput.language, normalizeRoleLanguage(existing?.language))
-    const listeningLanguage = normalizeRoleLanguage(
-      roleInput.listeningLanguage,
-      normalizeRoleLanguage(existing?.listeningLanguage, legacyLanguage),
-  )
-    const outputLanguage = normalizeRoleLanguage(
-      roleInput.outputLanguage,
-      normalizeRoleLanguage(existing?.outputLanguage, legacyLanguage),
-    )
-    const knowledgeMode = normalizeKnowledgeMode(roleInput.knowledgeMode || existing?.knowledgeMode)
-    const embeddingModelId = typeof roleInput.embeddingModelId === 'string'
-      ? roleInput.embeddingModelId.trim()
-      : (existing?.embeddingModelId || '')
-    if (knowledgeMode === 'rag' && !configuredEmbeddingModels(config).some((model) => model.id === embeddingModelId)) {
-      return { ok: false, error: '使用知识库检索前，请先选择一个有效的 Embedding 模型。' }
-    }
-    const nextRole = {
-      id,
-      name,
-      identity: normalizeRoleText(roleInput.identity),
-      goal: normalizeRoleText(roleInput.goal),
-      corePrinciples: normalizeRoleText(roleInput.corePrinciples),
-      behavior: normalizeRoleText(roleInput.behavior),
-      workflow: normalizeRoleText(roleInput.workflow),
-      constraints: normalizeRoleText(roleInput.constraints),
-      listeningLanguage,
-      outputLanguage,
-      voice: normalizeRoleVoice(roleInput.voice),
-      speechStyle: normalizeRoleText(roleInput.speechStyle, 4000),
-      avatar: roleInput.avatarRemoved ? '' : (normalizeAvatarData(roleInput.avatar) || normalizeAvatarData(existing?.avatar)),
-      avatarName: roleInput.avatarRemoved ? '' : (normalizeRoleText(roleInput.avatarName, 160) || existing?.avatarName || ''),
-      abilities,
-      drawingPolicy: abilities.includes('drawing') ? normalizeRoleText(roleInput.drawingPolicy, 20000) : '',
-      // Keep this field internally so legacy writing guidance survives, but
-      // expose and control it through the unified Drawing capability.
-      writingPolicy: abilities.includes('drawing')
-        ? normalizeRoleText(roleInput.writingPolicy || existing?.writingPolicy || roleInput.subtitlesPolicy, 20000)
-        : '',
-      screenVisionIntervalSec: screenVisionEnabled ? normalizeScreenVisionInterval(roleInput.screenVisionIntervalSec) : '',
-      screenVisionChangeThreshold: screenVisionEnabled ? normalizeScreenVisionChangeThreshold(roleInput.screenVisionChangeThreshold) : '',
-      initiativeTimeoutSec: initiativeEnabled ? normalizeInitiativeTimeout(roleInput.initiativeTimeoutSec) : '',
-      initiativePrompt: initiativeEnabled ? normalizeRoleText(roleInput.initiativePrompt, 20000) : '',
-      knowledgeText: normalizeRoleText(roleInput.knowledgeText, 50000),
-      knowledgeMode,
-      embeddingModelId: knowledgeMode === 'rag' ? embeddingModelId : '',
-      knowledgeFiles: persistRoleFiles(id, roleInput.knowledgeFiles, existing?.knowledgeFiles),
+    let buildArtifact = knowledgeBuildArtifacts.get(id)
+    let publication = null
+    if (nextRole.knowledgeMode === 'rag') {
+      const requestedBuildId = typeof roleInput?.knowledgeBuildId === 'string' ? roleInput.knowledgeBuildId.trim() : ''
+      const canUseStagedBuild = Boolean(
+        buildArtifact
+        && requestedBuildId
+        && buildArtifact.buildId === requestedBuildId
+        && !knowledgeIndexNeedsRebuild(nextRole, config, buildArtifact.dbPath),
+      )
+      if (canUseStagedBuild) {
+        try {
+          publication = publishKnowledgeBuild(buildArtifact, id)
+          nextRole = { ...nextRole, knowledgeFiles: publication.files }
+        } catch (error) {
+          return { ok: false, error: `知识库发布失败：${error.message}` }
+        }
+      } else {
+        if (buildArtifact) {
+          await discardKnowledgeBuildArtifact(id)
+          buildArtifact = null
+        }
+        if (knowledgeIndexNeedsRebuild(nextRole, config)) {
+          return { ok: false, error: 'RAG 角色需要先点击“构建知识库”，构建完成后才能保存。' }
+        }
+      }
+    } else {
+      // Keep prompt-mode files usable when switching away from RAG, but do
+      // not leave a staged index behind once the role is saved.
+      nextRole = {
+        ...nextRole,
+        knowledgeFiles: persistRoleFiles(id, nextRole.knowledgeFiles, existing?.knowledgeFiles),
+      }
+      await discardKnowledgeBuildArtifact(id)
     }
     const nextRoles = [nextRole, ...roles.filter((_role, index) => index !== existingIndex)]
     const nextConfig = { ...config, roles: nextRoles }
     delete nextConfig.apiKey
     delete nextConfig.encrypted
-    writeConfig(nextConfig)
-    const knowledgeChanged = knowledgeMaterialChanged(existing, nextRole)
-    if (existing && knowledgeChanged && knowledgeMode !== 'rag') invalidateKnowledgeBuild(id)
-    const shouldBuildKnowledge = knowledgeMode === 'rag'
-      && (knowledgeChanged || knowledgeIndexNeedsRebuild(nextRole, nextConfig))
-    const buildVersion = shouldBuildKnowledge ? scheduleKnowledgeRebuild(nextRole) : null
-    const rolePublic = publicRole(nextRole)
-    if (buildVersion) rolePublic.knowledgeStatus = {
-      ...(rolePublic.knowledgeStatus || {}),
-      status: 'indexing',
-      embeddingModelId,
-      error: '',
+    try {
+      writeConfig(nextConfig)
+    } catch (error) {
+      if (publication) {
+        try { publication.rollback() } catch (rollbackError) {
+          debugLog('knowledge.publish.rollback_error', { roleId: id, error: serializeError(rollbackError) }, 'ERROR')
+        }
+      }
+      return { ok: false, error: `角色保存失败：${error.message}` }
     }
+    if (publication) {
+      publication.commit()
+      if (knowledgeBuildArtifacts.get(id) === buildArtifact) knowledgeBuildArtifacts.delete(id)
+    }
+    const rolePublic = publicRole(nextRole)
     debugLog('role.saved', {
       roleId: id,
-      name,
+      name: nextRole.name,
       knowledgeFiles: nextRole.knowledgeFiles.length,
-      knowledgeMode,
-      embeddingModelId,
-      knowledgeRebuildScheduled: Boolean(buildVersion),
+      knowledgeMode: nextRole.knowledgeMode,
+      knowledgeRetrievalMode: nextRole.knowledgeRetrievalMode,
+      embeddingModelId: nextRole.embeddingModelId,
+      knowledgeRebuildScheduled: false,
     })
     return { ok: true, role: rolePublic, selectedRoleId: nextConfig.selectedRoleId || '' }
   })
-  ipcMain.handle('roles:reindex-knowledge', (_event, roleId) => {
-    const id = typeof roleId === 'string' ? roleId.trim() : ''
+  ipcMain.handle('roles:reindex-knowledge', async (_event, roleInput) => {
     const config = readConfig()
-    const role = configuredRoles(config).find((item) => item.id === id)
+    let role
+    let roleOverride = null
+    let buildArtifact = null
+    if (roleInput && typeof roleInput === 'object') {
+      const prepared = prepareRoleRecord(roleInput, config, { persistFiles: false })
+      if (!prepared.ok) return prepared
+      role = prepared.role
+    } else {
+      const id = typeof roleInput === 'string' ? roleInput.trim() : ''
+      role = allRoles(config).find((item) => item.id === id)
+    }
     if (!role) return { ok: false, error: '找不到这个角色。' }
-    if (role.isBuiltin || normalizeKnowledgeMode(role.knowledgeMode) !== 'rag') {
-      return { ok: false, error: '只有自定义 RAG 角色可以重建知识库。' }
+    const id = role.id
+    if (normalizeKnowledgeMode(role.knowledgeMode) !== 'rag') {
+      return { ok: false, error: '只有 RAG 角色可以重建知识库。' }
     }
     if (knowledgeDeletingRoles.has(id)) return { ok: false, error: '这个角色正在删除，请稍后重试。' }
+    if (!String(role.knowledgeText || '').trim() && !(Array.isArray(role.knowledgeFiles) && role.knowledgeFiles.length)) {
+      return { ok: false, error: '请先填写知识内容或添加知识文件，然后再构建知识库。' }
+    }
     const embeddingRecord = configuredEmbeddingModels(config).find((model) => model.id === role.embeddingModelId)
     const embeddingModel = decryptEmbeddingModel(embeddingRecord)
-    if (!embeddingModel) return { ok: false, error: '角色未配置有效的 Embedding 模型。' }
-    const status = updateKnowledgeStatus(roleKnowledgeDatabasePath(id), 'indexing', {
-      embeddingModelId: embeddingModel.id,
-      embeddingFingerprint: knowledgeModelFingerprint(embeddingModel),
-      knowledgeSourceFingerprint: knowledgeSourceFingerprint(role),
-      error: '',
-    })
-    emitKnowledgeStatus(id, status)
-    const buildVersion = scheduleKnowledgeRebuild(role)
-    if (!buildVersion) return { ok: false, error: '知识库重建任务未能启动。' }
-    return { ok: true, status: { ...status, status: 'indexing' } }
+    if (!embeddingModel) {
+      if (buildArtifact) await discardKnowledgeBuildArtifact(id, buildArtifact.buildId)
+      return { ok: false, error: '角色未配置有效的 Embedding 模型。' }
+    }
+    if (roleInput && typeof roleInput === 'object') {
+      await discardKnowledgeBuildArtifact(role.id)
+      const buildId = randomUUID()
+      const stagingDirectory = join(knowledgeStagingRoot(), buildId)
+      const stagingKnowledgeDirectory = join(stagingDirectory, 'knowledge')
+      try {
+        mkdirSync(stagingKnowledgeDirectory, { recursive: true })
+        const stagedFiles = persistRoleFiles(role.id, role.knowledgeFiles, [], stagingKnowledgeDirectory)
+        roleOverride = { ...role, knowledgeFiles: stagedFiles }
+        buildArtifact = {
+          buildId,
+          roleId: role.id,
+          stagingDirectory,
+          knowledgeDirectory: stagingKnowledgeDirectory,
+          dbPath: join(stagingKnowledgeDirectory, 'knowledge.db'),
+          files: stagedFiles,
+        }
+        knowledgeBuildArtifacts.set(role.id, buildArtifact)
+      } catch (error) {
+        removeKnowledgeBuildArtifact({ stagingDirectory, roleId: role.id, buildId })
+        return { ok: false, error: `知识库暂存失败：${error.message}` }
+      }
+    }
+    const dbPath = buildArtifact?.dbPath || roleKnowledgeDatabasePath(id)
+    let status
+    try {
+      status = updateKnowledgeStatus(dbPath, 'indexing', {
+        embeddingModelId: embeddingModel.id,
+        embeddingFingerprint: knowledgeModelFingerprint(embeddingModel),
+        knowledgeSourceFingerprint: knowledgeSourceFingerprint(roleOverride || role),
+        error: '',
+      })
+    } catch (error) {
+      if (buildArtifact) await discardKnowledgeBuildArtifact(id, buildArtifact.buildId)
+      return { ok: false, error: `知识库初始化失败：${error.message}` }
+    }
+    emitKnowledgeStatus(id, { ...status, status: 'indexing', progress: 0, processedChunks: 0, totalChunks: 0 })
+    const buildVersion = scheduleKnowledgeRebuild(roleOverride || role, { roleOverride, dbPath })
+    if (!buildVersion) {
+      if (buildArtifact) await discardKnowledgeBuildArtifact(id, buildArtifact.buildId)
+      return { ok: false, error: '知识库重建任务未能启动。' }
+    }
+    const build = knowledgeBuilds.get(id)
+    if (build) await build
+    const finalStatus = getKnowledgeStatus(dbPath)
+    if (finalStatus.status === 'error' || !finalStatus.chunkCount) {
+      if (buildArtifact) await discardKnowledgeBuildArtifact(id, buildArtifact.buildId)
+      return { ok: false, error: finalStatus.error || '知识库没有可用文本，无法完成构建。', status: finalStatus, roleId: id }
+    }
+    if (buildArtifact) {
+      buildArtifact.status = finalStatus
+      return {
+        ok: true,
+        status: { ...finalStatus, progress: 100, processedChunks: finalStatus.chunkCount, totalChunks: finalStatus.chunkCount },
+        roleId: id,
+        knowledgeBuildId: buildArtifact.buildId,
+        knowledgeFiles: buildArtifact.files,
+      }
+    }
+    return { ok: true, status: { ...finalStatus, progress: 100, processedChunks: finalStatus.chunkCount, totalChunks: finalStatus.chunkCount }, roleId: id }
+  })
+  ipcMain.handle('roles:discard-knowledge-build', async (_event, payload) => {
+    const roleId = typeof payload === 'string' ? payload.trim() : (typeof payload?.roleId === 'string' ? payload.roleId.trim() : '')
+    const buildId = typeof payload === 'object' && typeof payload?.knowledgeBuildId === 'string' ? payload.knowledgeBuildId.trim() : ''
+    if (roleId) await discardKnowledgeBuildArtifact(roleId, buildId)
+    return { ok: true }
   })
   ipcMain.handle('roles:select', (_event, roleId) => {
     const config = readConfig()
@@ -2146,14 +2670,15 @@ app.whenReady().then(async () => {
     const config = readConfig()
     const roles = configuredRoles(config)
     const role = roles.find((item) => item.id === roleId)
-    if (!role && bundledSampleRoles().some((item) => item.id === roleId)) {
+    if (role?.isBuiltin || (!role && bundledSampleRoles().some((item) => item.id === roleId))) {
       return { ok: false, error: '官方示例角色不可删除。' }
     }
     if (!role) return { ok: false, error: '找不到这个角色。' }
     const nextRoles = roles.filter((item) => item.id !== roleId)
     const nextConfig = { ...config, roles: nextRoles, selectedRoleId: config.selectedRoleId === roleId ? '' : config.selectedRoleId }
     knowledgeDeletingRoles.add(roleId)
-    invalidateKnowledgeBuild(roleId)
+    const stagedBuildDiscarded = await discardKnowledgeBuildArtifact(roleId)
+    if (!stagedBuildDiscarded) invalidateKnowledgeBuild(roleId)
     try {
       writeConfig(nextConfig)
       const activeSearches = [...(knowledgeSearches.get(roleId) || [])]
@@ -2171,7 +2696,6 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:save-embedding-model', (_event, modelInput) => {
     if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用。' }
     const normalized = normalizeEmbeddingModelInput(modelInput)
-    if (!normalized.name) return { ok: false, error: 'Embedding 模型名称不能为空。' }
     if (!normalized.model) return { ok: false, error: 'Embedding 模型标识不能为空。' }
     if (!normalized.url) return { ok: false, error: 'Embedding 服务 URL 不能为空。' }
     try { validateEmbeddingModelUrl(normalized.url, normalized.type) } catch (error) { return { ok: false, error: error.message } }
@@ -2185,7 +2709,6 @@ app.whenReady().then(async () => {
       id: existing?.id || randomUUID(),
       type: normalized.type,
       alias: normalized.alias,
-      name: normalized.name,
       model: normalized.model,
       url: normalized.url,
       dimensions: normalized.dimensions,
@@ -2248,6 +2771,47 @@ app.whenReady().then(async () => {
       return { ok: false, error: error.message }
     }
   })
+  ipcMain.on('settings:cancel-model-test', (_event, requestId) => {
+    if (cancelModelConnectionTest(requestId)) {
+      debugLog('settings.model_test.cancelled', { requestId: normalizeModelTestRequestId(requestId) })
+    }
+  })
+  ipcMain.handle('settings:test-model', async (_event, modelInput, requestId) => {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用。' }
+    if (!modelInput || typeof modelInput !== 'object') return { ok: false, error: '模型配置无效。' }
+    const id = typeof modelInput.id === 'string' ? modelInput.id.trim() : ''
+    const name = typeof modelInput.name === 'string' ? modelInput.name.trim() : ''
+    const url = typeof modelInput.url === 'string' ? modelInput.url.trim() : ''
+    const inputApiKey = typeof modelInput.apiKey === 'string' ? modelInput.apiKey.trim() : ''
+    if (!name) return { ok: false, error: 'Model name 不能为空。' }
+    if (!url) return { ok: false, error: 'URL 不能为空。' }
+    try {
+      new URL(url)
+    } catch {
+      return { ok: false, error: 'URL 格式无效。' }
+    }
+    const config = readConfig()
+    const existing = configuredModels(config).find((model) => model.id === id)
+    let apiKey = inputApiKey
+    if (!apiKey && existing?.apiKey) {
+      try {
+        apiKey = existing.encrypted === false
+          ? existing.apiKey
+          : safeStorage.decryptString(Buffer.from(existing.apiKey, 'base64'))
+      } catch (error) {
+        debugLog('settings.model.test_key_error', { model: name, error: serializeError(error) }, 'ERROR')
+        return { ok: false, error: `API Key 读取失败：${error.message}` }
+      }
+    }
+    if (!apiKey) return { ok: false, error: 'API Key 不能为空。' }
+    const result = await runPythonModelConnectionTest({ name, url }, apiKey, requestId)
+    if (result.ok) {
+      debugLog('settings.model.tested', { model: name, url })
+      return { ok: true }
+    }
+    debugLog('settings.model.test_failed', { model: name, url, error: result.error }, 'ERROR')
+    return { ok: false, error: result.error || '模型连接测试失败。' }
+  })
   ipcMain.handle('settings:save-model', (_event, modelInput) => {
     if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用。' }
     if (!modelInput || typeof modelInput !== 'object') return { ok: false, error: '模型配置无效。' }
@@ -2306,6 +2870,45 @@ app.whenReady().then(async () => {
     writeConfig({ ...config, modelMode: mode })
     debugLog('settings.model_mode.changed', { mode })
     return { ok: true, modelMode: mode }
+  })
+
+  ipcMain.handle('settings:test-harness-model', async (_event, modelInput, requestId) => {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'System secure storage is unavailable.' }
+    if (!modelInput || typeof modelInput !== 'object') return { ok: false, error: 'Harness model configuration is invalid.' }
+    const module = typeof modelInput.module === 'string' ? modelInput.module.trim().toLowerCase() : ''
+    const name = typeof modelInput.name === 'string' ? modelInput.name.trim() : ''
+    const url = typeof modelInput.url === 'string' ? modelInput.url.trim() : ''
+    const voice = typeof modelInput.voice === 'string' ? modelInput.voice.trim().slice(0, 80) : ''
+    const inputApiKey = typeof modelInput.apiKey === 'string' ? modelInput.apiKey.trim() : ''
+    if (!HARNESS_MODULES.includes(module)) return { ok: false, error: 'Harness module is invalid.' }
+    if (!name) return { ok: false, error: 'Model name cannot be empty.' }
+    if (!url) return { ok: false, error: 'URL cannot be empty.' }
+    try {
+      new URL(url)
+    } catch {
+      return { ok: false, error: 'URL format is invalid.' }
+    }
+    const config = readConfig()
+    const existing = configuredHarnessModels(config)[module]
+    let apiKey = inputApiKey
+    if (!apiKey && existing?.apiKey) {
+      try {
+        apiKey = existing.encrypted === false
+          ? existing.apiKey
+          : safeStorage.decryptString(Buffer.from(existing.apiKey, 'base64'))
+      } catch (error) {
+        debugLog('settings.harness_model.test_key_error', { module, model: name, error: serializeError(error) }, 'ERROR')
+        return { ok: false, error: 'API Key could not be read.' }
+      }
+    }
+    if (!apiKey) return { ok: false, error: 'API Key cannot be empty.' }
+    const result = await runHarnessModelConnectionTest({ module, name, url, voice }, apiKey, requestId)
+    if (result.ok) {
+      debugLog('settings.harness_model.tested', { module, model: name, url })
+      return { ok: true }
+    }
+    debugLog('settings.harness_model.test_failed', { module, model: name, url, error: result.error }, 'ERROR')
+    return { ok: false, error: result.error || 'Harness model connection test failed.' }
   })
   ipcMain.handle('settings:save-harness-model', (_event, modelInput) => {
     if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '系统安全存储不可用。' }
@@ -2465,6 +3068,12 @@ app.whenReady().then(async () => {
     const roles = allRoles(storedConfig)
     const storedRole = roles.find((item) => item.id === config?.roleId) || null
     const role = normalizeRoleForRuntime(storedRole)
+
+    if (!useHarness
+      && normalizeKnowledgeMode(role?.knowledgeMode) === 'rag'
+      && normalizeKnowledgeRetrievalMode(role?.knowledgeRetrievalMode) === 'deep') {
+      return { ok: false, error: 'RAG 深度思考检索仅支持 Harness 模式，请切换到 Harness 后再开始会话。' }
+    }
 
     if (useHarness) {
       if (bridgeProcess) stopBridge()
@@ -2698,6 +3307,7 @@ app.whenReady().then(async () => {
   mainWindow.on('closed', () => {
     debugLog('electron.window.closed')
     mainWindow = undefined
+    cancelAllModelConnectionTests()
     stopBridge()
     stopHarness()
     stopSystemAudioCapture()
@@ -2707,4 +3317,9 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  for (const roleId of knowledgeBuildArtifacts.keys()) invalidateKnowledgeBuild(roleId)
+  cleanupKnowledgeStaging()
 })
