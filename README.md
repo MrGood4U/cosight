@@ -43,11 +43,19 @@ the next.
 
 Click a thumbnail to watch the demo on YouTube.
 
+**Mock interviewer: listening and speaking**
+
 [![Mock interviewer: listening and speaking](https://img.youtube.com/vi/5nD141eg7qk/hqdefault.jpg)](https://youtu.be/5nD141eg7qk)
+
+**Mock interviewer: drawing**
 
 [![Mock interviewer: drawing](https://img.youtube.com/vi/wMkcMLySvB4/hqdefault.jpg)](https://youtu.be/wMkcMLySvB4)
 
+**Mock interviewer: screen vision**
+
 [![Mock interviewer: screen vision](https://img.youtube.com/vi/-eNaUFuGlAA/hqdefault.jpg)](https://youtu.be/-eNaUFuGlAA)
+
+**Tabletop RPG session with a mock DM**
 
 [![Tabletop RPG session with a mock DM](https://img.youtube.com/vi/blt87WVt454/hqdefault.jpg)](https://youtu.be/blt87WVt454)
 
