@@ -39,6 +39,13 @@ the next.
   or import a previous transcript as conversation context. Media files are not
   embedded in these exports.
 
+## Demo videos
+
+- [Mock interviewer: listening and speaking](https://youtu.be/5nD141eg7qk)
+- [Mock interviewer: drawing](https://youtu.be/wMkcMLySvB4)
+- [Mock interviewer: screen vision](https://youtu.be/-eNaUFuGlAA)
+- [Tabletop RPG session with a mock DM](https://youtu.be/blt87WVt454)
+
 ## How to use
 
 The Windows installer is generated under `release/` after packaging. After
