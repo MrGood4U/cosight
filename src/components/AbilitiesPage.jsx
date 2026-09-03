@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   AudioLines,
   Monitor,
@@ -13,6 +14,8 @@ import {
   DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS,
   TURN_DETECTION_SILENCE_DURATION_MAX_MS,
   TURN_DETECTION_SILENCE_DURATION_MIN_MS,
+  normalizeSeeMaxObjects,
+  normalizeTurnDetectionSilenceDuration,
 } from '../app/shared.js'
 
 
@@ -47,6 +50,7 @@ export function AbilitiesPage({
           max: SEE_MAX_OBJECTS_MAX,
           step: 1,
           unit: t('abilities.seeMaxObjectsUnit'),
+          normalize: normalizeSeeMaxObjects,
           onChange: setSeeMaxObjects,
         },
       ],
@@ -65,6 +69,7 @@ export function AbilitiesPage({
         max: TURN_DETECTION_SILENCE_DURATION_MAX_MS,
         step: 100,
         unit: t('abilities.turnDetectionSilenceDurationUnit'),
+        normalize: normalizeTurnDetectionSilenceDuration,
         onChange: setTurnDetectionSilenceDurationMs,
       },
     },
@@ -85,17 +90,36 @@ export function AbilitiesPage({
     <div className="abilities-note"><Sparkles size={16} /><div><strong>{t('abilities.noteTitle')}</strong><p>{t('abilities.noteDescription')}</p></div></div>
   </section>
 }
+
+function AbilityNumberControl({ control }) {
+  const [draft, setDraft] = useState(() => String(control.value ?? ''))
+  const [editing, setEditing] = useState(false)
+
+  useEffect(() => {
+    if (!editing) setDraft(String(control.value ?? ''))
+  }, [control.value, editing])
+
+  const commit = () => {
+    const nextValue = control.normalize ? control.normalize(draft) : draft
+    setEditing(false)
+    setDraft(String(nextValue ?? ''))
+    control.onChange(nextValue)
+  }
+
+  return <div className="ability-card-control ability-card-number-control" title={control.hint}>
+    <label htmlFor={control.id}>{control.label}</label>
+    <div className="ability-card-number-field">
+      <input id={control.id} type="number" min={control.min} max={control.max} step={control.step} value={draft} onFocus={() => setEditing(true)} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }} aria-label={control.label} />
+      <span>{control.unit}</span>
+    </div>
+  </div>
+}
+
 export function AbilityCard({ icon, title, description, detail, hint, control, controls: controlList }) {
   const controls = Array.isArray(controlList) ? controlList : control ? [control] : []
   return <article className={`ability-card ${controls.length ? 'ability-card-configurable' : ''}`}>
     <div className="ability-card-header"><div className="ability-icon">{icon}</div>{controls.length > 0 && <div className="ability-card-controls">{controls.map((item, index) => item.type === 'number'
-      ? <div className="ability-card-control ability-card-number-control" title={item.hint} key={item.id || `number-control-${index}`}>
-        <label htmlFor={item.id}>{item.label}</label>
-        <div className="ability-card-number-field">
-          <input id={item.id} type="number" min={item.min} max={item.max} step={item.step} value={item.value} onChange={(event) => item.onChange(event.target.value)} aria-label={item.label} />
-          <span>{item.unit}</span>
-        </div>
-      </div>
+      ? <AbilityNumberControl control={item} key={item.id || `number-control-${index}`} />
       : <div className="ability-card-control" title={item.hint} key={item.id || `toggle-control-${index}`}><span>{item.label}</span><button type="button" className={`toggle ${item.value ? 'on' : ''}`} onClick={() => item.onChange(!item.value)} aria-label={item.label} aria-pressed={item.value}><span /></button></div>)}</div>}</div>
     <div className="ability-card-copy"><h2>{title}</h2><p>{description}</p>{detail && <div className="ability-card-detail">{detail}</div>}<small>{hint}</small></div>
   </article>
