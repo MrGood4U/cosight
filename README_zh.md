@@ -31,10 +31,15 @@ Cosight 不把智能体固定成一种身份。用户可以创建多个 Role，�
 
 ## 演示视频
 
-- [模拟面试官：展示听和说的能力](https://youtu.be/5nD141eg7qk)
-- [模拟面试官：展示绘画能力](https://youtu.be/wMkcMLySvB4)
-- [模拟面试官：展示屏幕视觉能力](https://youtu.be/-eNaUFuGlAA)
-- [和模拟 DM 玩跑团](https://youtu.be/blt87WVt454)
+点击缩略图即可在 YouTube 上观看演示视频。
+
+[![模拟面试官：展示听和说的能力](https://img.youtube.com/vi/5nD141eg7qk/hqdefault.jpg)](https://youtu.be/5nD141eg7qk)
+
+[![模拟面试官：展示绘画能力](https://img.youtube.com/vi/wMkcMLySvB4/hqdefault.jpg)](https://youtu.be/wMkcMLySvB4)
+
+[![模拟面试官：展示屏幕视觉能力](https://img.youtube.com/vi/-eNaUFuGlAA/hqdefault.jpg)](https://youtu.be/-eNaUFuGlAA)
+
+[![和模拟 DM 玩跑团](https://img.youtube.com/vi/blt87WVt454/hqdefault.jpg)](https://youtu.be/blt87WVt454)
 
 ### 屏幕捕获说明
 
