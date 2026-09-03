@@ -7,8 +7,14 @@ import {
   DEFAULT_HARNESS_SETTINGS,
   SEE_BBOX_DEBUG_ENABLED,
   SEE_BBOX_DEBUG_STORAGE_KEY,
+  DEFAULT_SEE_MAX_OBJECTS,
+  SEE_MAX_OBJECTS_STORAGE_KEY,
+  normalizeSeeMaxObjects,
   DEFAULT_OUTPUT_VOLUME,
   OUTPUT_VOLUME_STORAGE_KEY,
+  DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS,
+  TURN_DETECTION_SILENCE_DURATION_STORAGE_KEY,
+  normalizeTurnDetectionSilenceDuration,
   DEFAULT_AUDIO_INPUT_MODE,
   AUDIO_INPUT_MODE_STORAGE_KEY,
   normalizeAudioInputMode,
@@ -145,6 +151,26 @@ const [seeBboxDebugEnabled, setSeeBboxDebugEnabled] = useState(() => {
     return SEE_BBOX_DEBUG_ENABLED
   }
 })
+const [seeMaxObjects, setSeeMaxObjectsState] = useState(() => {
+  try {
+    return normalizeSeeMaxObjects(window.localStorage.getItem(SEE_MAX_OBJECTS_STORAGE_KEY))
+  } catch {
+    return DEFAULT_SEE_MAX_OBJECTS
+  }
+})
+const setSeeMaxObjects = useCallback((value) => {
+  setSeeMaxObjectsState(normalizeSeeMaxObjects(value))
+}, [])
+const [turnDetectionSilenceDurationMs, setTurnDetectionSilenceDurationMsState] = useState(() => {
+  try {
+    return normalizeTurnDetectionSilenceDuration(window.localStorage.getItem(TURN_DETECTION_SILENCE_DURATION_STORAGE_KEY))
+  } catch {
+    return DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS
+  }
+})
+const setTurnDetectionSilenceDurationMs = useCallback((value) => {
+  setTurnDetectionSilenceDurationMsState(normalizeTurnDetectionSilenceDuration(value))
+}, [])
 const [elapsed, setElapsed] = useState(0)
 const [transcript, setTranscript] = useState([])
 const [textInput, setTextInput] = useState('')
@@ -495,6 +521,32 @@ useEffect(() => {
     // Local persistence is optional in the desktop shell.
   }
 }, [seeBboxDebugEnabled])
+
+useEffect(() => {
+  const normalizedLimit = normalizeSeeMaxObjects(seeMaxObjects)
+  if (normalizedLimit !== seeMaxObjects) {
+    setSeeMaxObjectsState(normalizedLimit)
+    return
+  }
+  try {
+    window.localStorage.setItem(SEE_MAX_OBJECTS_STORAGE_KEY, String(normalizedLimit))
+  } catch {
+    // Local persistence is optional in the desktop shell.
+  }
+}, [seeMaxObjects])
+
+useEffect(() => {
+  const normalizedDuration = normalizeTurnDetectionSilenceDuration(turnDetectionSilenceDurationMs)
+  if (normalizedDuration !== turnDetectionSilenceDurationMs) {
+    setTurnDetectionSilenceDurationMsState(normalizedDuration)
+    return
+  }
+  try {
+    window.localStorage.setItem(TURN_DETECTION_SILENCE_DURATION_STORAGE_KEY, String(normalizedDuration))
+  } catch {
+    // Local persistence is optional in the desktop shell.
+  }
+}, [turnDetectionSilenceDurationMs])
 
 useEffect(() => {
   try {
@@ -1683,7 +1735,10 @@ async function displayCaptionOnOverlay(caption, clear = false, layer = 'writing'
     ok: true,
     cleared: clear,
     displayed: Boolean(captionRef.current?.text),
-    captionIncludedInNextScreenFrame: Boolean(captionRef.current?.text),
+    // Captions are rendered in an OS-protected overlay window. They remain
+    // visible to the user but are intentionally absent from screen frames
+    // sent to the visual model.
+    captionIncludedInNextScreenFrame: false,
   }
 }
 
@@ -1871,8 +1926,10 @@ async function startChat() {
       roleId: selectedRoleId,
       screenSharing: Boolean(screenSharing),
       screenVisionEnabled,
+      seeMaxObjects,
       listeningEnabled,
       speakingEnabled,
+      turnDetectionSilenceDurationMs,
       // A window capture has window-local coordinates and cannot safely use
       // the full-display transparent overlay. The runtime guard also keeps
       // this invariant if the capture source changes during a session.
@@ -2501,6 +2558,8 @@ useEffect(() => {
     micDevices, outputDevices, selectedMic, setSelectedMic, audioInputMode, selectedOutput, setSelectedOutput,
     outputVolume, setOutputVolume, connection, setConnection, screenSharing, screenLoading,
     seeBboxDebugEnabled, setSeeBboxDebugEnabled,
+    seeMaxObjects, setSeeMaxObjects,
+    turnDetectionSilenceDurationMs, setTurnDetectionSilenceDurationMs,
     autoReconnect, setAutoReconnect, pushToTalk, setPushToTalk,
     allowInterruptions, setAllowInterruptions, liveTranscript, setLiveTranscript,
     coreSubtitlesEnabled, setCoreSubtitlesEnabled,

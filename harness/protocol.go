@@ -16,23 +16,25 @@ type modelProfile struct {
 }
 
 type startConfig struct {
-	SessionID               string                  `json:"sessionId"`
-	Models                  map[string]modelProfile `json:"models"`
-	Role                    map[string]any          `json:"role"`
-	SeeMinIntervalMS        int                     `json:"seeMinIntervalMs"`
-	SeeChangeThreshold      float64                 `json:"seeChangeThreshold"`
-	ScreenVisionEnabled     bool                    `json:"screenVisionEnabled"`
-	ScreenSharing           bool                    `json:"screenSharing"`
-	RecentConversationCount int                     `json:"recentConversationCount"`
-	RecentVisionCount       int                     `json:"recentVisionCount"`
-	ConversationSummary     conversationSummary     `json:"conversationSummary"`
-	KnowledgeMode           string                  `json:"knowledgeMode"`
-	KnowledgeRetrievalMode  string                  `json:"knowledgeRetrievalMode"`
-	InitiativeEnabled       bool                    `json:"initiativeEnabled"`
-	ListeningEnabled        bool                    `json:"listeningEnabled"`
-	SpeakingEnabled         bool                    `json:"speakingEnabled"`
-	DrawingEnabled          bool                    `json:"drawingEnabled"`
-	ImportedContext         any                     `json:"importedContext,omitempty"`
+	SessionID                      string                  `json:"sessionId"`
+	Models                         map[string]modelProfile `json:"models"`
+	Role                           map[string]any          `json:"role"`
+	SeeMinIntervalMS               int                     `json:"seeMinIntervalMs"`
+	SeeChangeThreshold             float64                 `json:"seeChangeThreshold"`
+	SeeMaxObjects                  int                     `json:"seeMaxObjects"`
+	ScreenVisionEnabled            bool                    `json:"screenVisionEnabled"`
+	ScreenSharing                  bool                    `json:"screenSharing"`
+	RecentConversationCount        int                     `json:"recentConversationCount"`
+	RecentVisionCount              int                     `json:"recentVisionCount"`
+	ConversationSummary            conversationSummary     `json:"conversationSummary"`
+	KnowledgeMode                  string                  `json:"knowledgeMode"`
+	KnowledgeRetrievalMode         string                  `json:"knowledgeRetrievalMode"`
+	InitiativeEnabled              bool                    `json:"initiativeEnabled"`
+	ListeningEnabled               bool                    `json:"listeningEnabled"`
+	TurnDetectionSilenceDurationMS int                     `json:"turnDetectionSilenceDurationMs"`
+	SpeakingEnabled                bool                    `json:"speakingEnabled"`
+	DrawingEnabled                 bool                    `json:"drawingEnabled"`
+	ImportedContext                any                     `json:"importedContext,omitempty"`
 }
 
 type inputCommand struct {

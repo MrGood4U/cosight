@@ -5,6 +5,8 @@ import {
   AUDIO_INPUT_MODES,
   DEFAULT_AUDIO_INPUT_MODE,
   DEFAULT_OUTPUT_VOLUME,
+  DEFAULT_SEE_MAX_OBJECTS,
+  DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS,
   MAX_USAGE_BUCKETS,
   buildUsageChart,
   clampNumber,
@@ -16,6 +18,8 @@ import {
   isHexColor,
   makeUsageRange,
   normalizeAudioInputMode,
+  normalizeSeeMaxObjects,
+  normalizeTurnDetectionSilenceDuration,
   normalizeDrawingStroke,
   normalizeImportedSessionArtifact,
   normalizeSeeDebugBoxes,
@@ -109,6 +113,16 @@ test('role, text, and generic value helpers keep unsafe or malformed values boun
   assert.equal(draft.screenVisionChangeThreshold, '8')
   assert.equal(draft.abilities.includes('drawing'), false)
   assert.equal(DEFAULT_OUTPUT_VOLUME, 48)
+  assert.equal(DEFAULT_SEE_MAX_OBJECTS, 8)
+  assert.equal(normalizeSeeMaxObjects(1), 1)
+  assert.equal(normalizeSeeMaxObjects(999), 20)
+  assert.equal(normalizeSeeMaxObjects(0), 1)
+  assert.equal(normalizeSeeMaxObjects('invalid'), 8)
+  assert.equal(DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS, 1600)
+  assert.equal(normalizeTurnDetectionSilenceDuration(200), 200)
+  assert.equal(normalizeTurnDetectionSilenceDuration(99999), 6000)
+  assert.equal(normalizeTurnDetectionSilenceDuration(50), 200)
+  assert.equal(normalizeTurnDetectionSilenceDuration('invalid'), 1600)
 
   assert.equal(formatElapsed(125), '02:05')
   assert.equal(formatElapsed(undefined), '00:00')

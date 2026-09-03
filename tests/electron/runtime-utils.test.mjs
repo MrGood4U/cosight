@@ -5,6 +5,7 @@ import {
   DEFAULT_ROLE_ABILITY_IDS,
   DEFAULT_SCREEN_VISION_INTERVAL_SECONDS,
   DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
+  DEFAULT_SEE_MAX_OBJECTS,
   HARNESS_MODULES,
   buildInitiativeCommand,
   configuredHarnessModels,
@@ -15,6 +16,7 @@ import {
   normalizeRoleAbilities,
   normalizeScreenVisionChangeThreshold,
   normalizeScreenVisionInterval,
+  normalizeSeeMaxObjects,
   normalizeUsageRecord,
   publicHarnessModel,
 } from '../../electron/runtime-utils.mjs'
@@ -45,6 +47,10 @@ test('screen vision and initiative settings are clamped to safe ranges', () => {
   assert.equal(normalizeInitiativeTimeout('1'), 5)
   assert.equal(normalizeInitiativeTimeout('999'), 300)
   assert.equal(normalizeInitiativeTimeout('not-a-number'), 10)
+  assert.equal(DEFAULT_SEE_MAX_OBJECTS, 8)
+  assert.equal(normalizeSeeMaxObjects('0'), 1)
+  assert.equal(normalizeSeeMaxObjects('999'), 20)
+  assert.equal(normalizeSeeMaxObjects('not-a-number'), 8)
 })
 
 test('the virtual Default role has the same runtime capability defaults as the renderer', () => {

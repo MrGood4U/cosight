@@ -101,6 +101,10 @@ func TestSeePromptRequiresSceneAndCompactVisionOutput(t *testing.T) {
 			t.Fatalf("See prompt is missing %q", required)
 		}
 	}
+	customPrompt := seeSystemPrompt(12) + seeUserPrompt(12)
+	if !strings.Contains(customPrompt, "最多返回 12 个") {
+		t.Fatal("See prompt did not use the configured object limit")
+	}
 }
 
 func TestParseVisionOutputAcceptsLegacySummaryAlias(t *testing.T) {
@@ -148,13 +152,31 @@ func TestRoleLanguagesFallbackToLegacyLanguage(t *testing.T) {
 	}
 }
 
-func TestStartConfigAcceptsInitiativeSetting(t *testing.T) {
+func TestStartConfigAcceptsSessionSettings(t *testing.T) {
 	var config startConfig
-	if err := json.Unmarshal([]byte(`{"initiativeEnabled":true}`), &config); err != nil {
+	if err := json.Unmarshal([]byte(`{"initiativeEnabled":true,"turnDetectionSilenceDurationMs":2400,"seeMaxObjects":12}`), &config); err != nil {
 		t.Fatalf("start config failed to decode: %v", err)
 	}
 	if !config.InitiativeEnabled {
 		t.Fatal("expected initiativeEnabled to be forwarded to Harness")
+	}
+	if config.TurnDetectionSilenceDurationMS != 2400 {
+		t.Fatalf("expected turn detection silence duration to be forwarded, got %d", config.TurnDetectionSilenceDurationMS)
+	}
+	if config.SeeMaxObjects != 12 {
+		t.Fatalf("expected see object limit to be forwarded, got %d", config.SeeMaxObjects)
+	}
+	if got := normalizeSeeMaxObjects(999); got != 20 {
+		t.Fatalf("expected see object limit upper bound, got %d", got)
+	}
+	if got := normalizeSeeMaxObjects(0); got != 8 {
+		t.Fatalf("expected see object limit default, got %d", got)
+	}
+	if got := normalizeTurnDetectionSilenceDuration(99999); got != 6000 {
+		t.Fatalf("expected silence duration upper bound, got %d", got)
+	}
+	if got := normalizeTurnDetectionSilenceDuration(0); got != 1600 {
+		t.Fatalf("expected silence duration default, got %d", got)
 	}
 }
 

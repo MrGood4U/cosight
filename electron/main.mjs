@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import {
   HARNESS_MODULES,
   DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD,
+  normalizeSeeMaxObjects,
   buildInitiativeCommand,
   configuredHarnessModels,
   configuredHarnessSettings,
@@ -84,6 +85,8 @@ let selectedDisplaySourceId = ''
 let electronLogPath
 let overlayWindow
 let overlayReady = false
+let captionOverlayWindow
+let captionOverlayReady = false
 let overlaySource
 let bundledSampleRolesCache
 let owenVisualInterviewPolicyCache
@@ -1601,16 +1604,8 @@ function overlaySourceKind(source) {
   return String(source?.id || '').startsWith('screen:') ? 'screen' : 'window'
 }
 
-async function ensureOverlayWindow() {
-  if (overlayWindow && !overlayWindow.isDestroyed() && overlayReady) return overlayWindow
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    await new Promise((resolve) => overlayWindow.webContents.once('did-finish-load', resolve))
-    overlayReady = true
-    return overlayWindow
-  }
-
-  overlayReady = false
-  overlayWindow = new BrowserWindow({
+function createOverlayWindow({ contentProtection, kind }) {
+  const window = new BrowserWindow({
     show: false,
     frame: false,
     transparent: true,
@@ -1631,19 +1626,57 @@ async function ensureOverlayWindow() {
       sandbox: true,
     },
   })
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  overlayWindow.setIgnoreMouseEvents(true)
-  overlayWindow.setContentProtection(true)
-  overlayWindow.on('closed', () => {
-    debugLog('overlay.window.closed')
-    overlayWindow = undefined
-    overlayReady = false
-    overlaySource = undefined
+  window.setAlwaysOnTop(true, 'screen-saver')
+  window.setIgnoreMouseEvents(true)
+  // Drawing marks remain available to screen recorders and are also
+  // composited into the outbound vision frame by the renderer. Captions use
+  // a separate protected window so they stay visible to the user but are
+  // omitted from desktop capture entirely.
+  window.setContentProtection(Boolean(contentProtection))
+  window.on('closed', () => {
+    debugLog('overlay.window.closed', { kind })
+    if (kind === 'caption') {
+      captionOverlayWindow = undefined
+      captionOverlayReady = false
+    } else {
+      overlayWindow = undefined
+      overlayReady = false
+      overlaySource = undefined
+    }
   })
+  return window
+}
+
+async function ensureOverlayWindow() {
+  if (overlayWindow && !overlayWindow.isDestroyed() && overlayReady) return overlayWindow
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    await new Promise((resolve) => overlayWindow.webContents.once('did-finish-load', resolve))
+    overlayReady = true
+    return overlayWindow
+  }
+
+  overlayReady = false
+  overlayWindow = createOverlayWindow({ contentProtection: false, kind: 'drawing' })
   await overlayWindow.loadFile(join(__dirname, 'overlay.html'))
   overlayReady = true
-  debugLog('overlay.window.ready', { id: overlayWindow.id })
+  debugLog('overlay.window.ready', { id: overlayWindow.id, kind: 'drawing', contentProtected: false })
   return overlayWindow
+}
+
+async function ensureCaptionOverlayWindow() {
+  if (captionOverlayWindow && !captionOverlayWindow.isDestroyed() && captionOverlayReady) return captionOverlayWindow
+  if (captionOverlayWindow && !captionOverlayWindow.isDestroyed()) {
+    await new Promise((resolve) => captionOverlayWindow.webContents.once('did-finish-load', resolve))
+    captionOverlayReady = true
+    return captionOverlayWindow
+  }
+
+  captionOverlayReady = false
+  captionOverlayWindow = createOverlayWindow({ contentProtection: true, kind: 'caption' })
+  await captionOverlayWindow.loadFile(join(__dirname, 'overlay.html'))
+  captionOverlayReady = true
+  debugLog('overlay.window.ready', { id: captionOverlayWindow.id, kind: 'caption', contentProtected: true })
+  return captionOverlayWindow
 }
 
 async function showOverlay(source) {
@@ -1657,13 +1690,21 @@ async function showOverlay(source) {
     return { ok: false, error: '窗口捕获不支持透明画布覆盖层，请选择整屏来源。' }
   }
   const display = getOverlayDisplay(source)
-  const window = await ensureOverlayWindow()
+  const [window, captionWindow] = await Promise.all([
+    ensureOverlayWindow(),
+    ensureCaptionOverlayWindow(),
+  ])
   overlaySource = { id: source.id, name: source.name, displayId: source.displayId, captureKind: sourceKind }
   window.setBounds(display.bounds)
+  captionWindow.setBounds(display.bounds)
   window.setAlwaysOnTop(true, 'screen-saver')
+  captionWindow.setAlwaysOnTop(true, 'screen-saver')
   window.setIgnoreMouseEvents(true)
+  captionWindow.setIgnoreMouseEvents(true)
   window.webContents.send('overlay:clear')
+  captionWindow.webContents.send('overlay:clear')
   window.showInactive()
+  captionWindow.showInactive()
   debugLog('overlay.show', {
     sourceId: source.id,
     sourceName: source.name,
@@ -1675,9 +1716,14 @@ async function showOverlay(source) {
 }
 
 function hideOverlay() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return
-  overlayWindow.webContents.send('overlay:clear')
-  overlayWindow.hide()
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:clear')
+    overlayWindow.hide()
+  }
+  if (captionOverlayWindow && !captionOverlayWindow.isDestroyed()) {
+    captionOverlayWindow.webContents.send('overlay:clear')
+    captionOverlayWindow.hide()
+  }
   debugLog('overlay.hide')
 }
 
@@ -1690,17 +1736,22 @@ function drawOnOverlay(payload) {
 }
 
 function showCaptionOnOverlay(payload) {
-  if (!overlayWindow || overlayWindow.isDestroyed() || !overlayReady || !overlayWindow.isVisible()) {
+  if (!captionOverlayWindow || captionOverlayWindow.isDestroyed() || !captionOverlayReady || !captionOverlayWindow.isVisible()) {
     return { ok: false, error: '透明文字层尚未准备好。' }
   }
-  overlayWindow.webContents.send('overlay:caption', payload)
+  captionOverlayWindow.webContents.send('overlay:caption', payload)
   return { ok: true }
 }
 
 function refreshOverlayBounds() {
-  if (!overlaySource || !overlayWindow || overlayWindow.isDestroyed() || !overlayWindow.isVisible()) return
+  if (!overlaySource) return
   const display = getOverlayDisplay(overlaySource)
-  overlayWindow.setBounds(display.bounds)
+  if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+    overlayWindow.setBounds(display.bounds)
+  }
+  if (captionOverlayWindow && !captionOverlayWindow.isDestroyed() && captionOverlayWindow.isVisible()) {
+    captionOverlayWindow.setBounds(display.bounds)
+  }
   debugLog('overlay.reposition', { displayId: String(display.id), bounds: display.bounds })
 }
 
@@ -1800,6 +1851,8 @@ function startBridge(config, modelProfile, apiKey) {
     listeningEnabled: Boolean(config?.listeningEnabled),
     speakingEnabled: Boolean(config?.speakingEnabled),
     initiativeEnabled: Boolean(config?.initiativeEnabled),
+    seeMaxObjects: normalizeSeeMaxObjects(config?.seeMaxObjects),
+    turnDetectionSilenceDurationMs: config?.turnDetectionSilenceDurationMs,
     roleId: config?.role?.id,
     canvasEnabled: Boolean(config?.canvasEnabled),
     writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
@@ -1877,6 +1930,8 @@ function startBridge(config, modelProfile, apiKey) {
     listeningEnabled: Boolean(config?.listeningEnabled),
     speakingEnabled: Boolean(config?.speakingEnabled),
     initiativeEnabled: Boolean(config?.initiativeEnabled),
+    seeMaxObjects: normalizeSeeMaxObjects(config?.seeMaxObjects),
+    turnDetectionSilenceDurationMs: config?.turnDetectionSilenceDurationMs,
     canvasEnabled: Boolean(config?.canvasEnabled),
     writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
     importedContext: config?.importedContext || null,
@@ -2251,10 +2306,12 @@ function startHarness(config, harnessModels) {
       screenSharing: Boolean(config?.screenSharing),
       recentConversationCount: config?.recentConversationCount,
       recentVisionCount: config?.recentVisionCount,
+      seeMaxObjects: normalizeSeeMaxObjects(config?.seeMaxObjects),
       knowledgeMode: normalizeKnowledgeMode(config?.role?.knowledgeMode),
       knowledgeRetrievalMode: normalizeKnowledgeRetrievalMode(config?.role?.knowledgeRetrievalMode),
       initiativeEnabled: Boolean(config?.initiativeEnabled),
       listeningEnabled: Boolean(config?.listeningEnabled),
+      turnDetectionSilenceDurationMs: config?.turnDetectionSilenceDurationMs,
       speakingEnabled: Boolean(config?.speakingEnabled),
       drawingEnabled: Boolean(config?.canvasEnabled),
       importedContext: config?.importedContext || null,
@@ -3057,6 +3114,8 @@ app.whenReady().then(async () => {
       listeningEnabled: Boolean(config?.listeningEnabled),
       speakingEnabled: Boolean(config?.speakingEnabled),
       initiativeEnabled: Boolean(config?.initiativeEnabled),
+      seeMaxObjects: normalizeSeeMaxObjects(config?.seeMaxObjects),
+      turnDetectionSilenceDurationMs: config?.turnDetectionSilenceDurationMs,
       roleId: config?.roleId,
       canvasEnabled: Boolean(config?.canvasEnabled),
       writingEnabled: Boolean(config?.canvasEnabled || config?.writingEnabled || config?.captionsEnabled),
@@ -3312,6 +3371,7 @@ app.whenReady().then(async () => {
     stopHarness()
     stopSystemAudioCapture()
     if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy()
+    if (captionOverlayWindow && !captionOverlayWindow.isDestroyed()) captionOverlayWindow.destroy()
   })
 })
 

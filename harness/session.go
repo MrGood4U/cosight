@@ -84,6 +84,7 @@ func (h *harness) start(config startConfig) error {
 		config.SeeChangeThreshold = seeChangeRatio * 100
 	}
 	config.SeeChangeThreshold = clampFloat(config.SeeChangeThreshold, 1, 100)
+	config.SeeMaxObjects = normalizeSeeMaxObjects(config.SeeMaxObjects)
 	if config.RecentConversationCount <= 0 {
 		config.RecentConversationCount = defaultRecentMessages
 	}
@@ -92,6 +93,7 @@ func (h *harness) start(config startConfig) error {
 		config.RecentVisionCount = defaultRecentVisions
 	}
 	config.RecentVisionCount = clampInt(config.RecentVisionCount, 1, maxVisionHistory)
+	config.TurnDetectionSilenceDurationMS = normalizeTurnDetectionSilenceDuration(config.TurnDetectionSilenceDurationMS)
 	if err := validateStartConfig(config); err != nil {
 		return err
 	}
@@ -133,20 +135,22 @@ func (h *harness) start(config startConfig) error {
 		modelNames[module] = profile.Name
 	}
 	emitLog("session.started", map[string]any{
-		"sessionId":               config.SessionID,
-		"screenVisionEnabled":     config.ScreenVisionEnabled,
-		"screenSharing":           config.ScreenSharing,
-		"listeningEnabled":        config.ListeningEnabled,
-		"speakingEnabled":         config.SpeakingEnabled,
-		"drawingEnabled":          config.DrawingEnabled,
-		"initiativeEnabled":       config.InitiativeEnabled,
-		"knowledgeMode":           config.KnowledgeMode,
-		"knowledgeRetrievalMode":  config.KnowledgeRetrievalMode,
-		"recentConversationCount": config.RecentConversationCount,
-		"recentVisionCount":       config.RecentVisionCount,
-		"seeMinIntervalMs":        config.SeeMinIntervalMS,
-		"seeChangeThreshold":      config.SeeChangeThreshold,
-		"seeMonitorTickMs":        seeMonitorTick.Milliseconds(),
+		"sessionId":                      config.SessionID,
+		"screenVisionEnabled":            config.ScreenVisionEnabled,
+		"screenSharing":                  config.ScreenSharing,
+		"listeningEnabled":               config.ListeningEnabled,
+		"turnDetectionSilenceDurationMs": config.TurnDetectionSilenceDurationMS,
+		"speakingEnabled":                config.SpeakingEnabled,
+		"drawingEnabled":                 config.DrawingEnabled,
+		"initiativeEnabled":              config.InitiativeEnabled,
+		"knowledgeMode":                  config.KnowledgeMode,
+		"knowledgeRetrievalMode":         config.KnowledgeRetrievalMode,
+		"recentConversationCount":        config.RecentConversationCount,
+		"recentVisionCount":              config.RecentVisionCount,
+		"seeMinIntervalMs":               config.SeeMinIntervalMS,
+		"seeChangeThreshold":             config.SeeChangeThreshold,
+		"seeMaxObjects":                  config.SeeMaxObjects,
+		"seeMonitorTickMs":               seeMonitorTick.Milliseconds(),
 		"seeCompare": map[string]any{
 			"sampleWidth":                 seeSampleWidth,
 			"sampleHeight":                seeSampleHeight,
@@ -172,7 +176,7 @@ func (h *harness) start(config startConfig) error {
 		sessionID := h.cfg.SessionID
 		sessionCtx := h.ctx
 		h.mu.Unlock()
-		client, err := newASRClient(sessionCtx, profile, roleListeningLanguage(config.Role), generation, sessionID, h.handleASREventFrom)
+		client, err := newASRClient(sessionCtx, profile, roleListeningLanguage(config.Role), generation, sessionID, config.TurnDetectionSilenceDurationMS, h.handleASREventFrom)
 		if err != nil {
 			h.stop()
 			return fmt.Errorf("Harness ASR 启动失败：%w", err)
@@ -296,7 +300,10 @@ func (h *harness) stopInternal(announce bool) {
 }
 
 func (h *harness) reconnectASR(ctx context.Context, profile modelProfile, language string, generation uint64, sessionID string) {
-	client, err := newASRClient(ctx, profile, language, generation, sessionID, h.handleASREventFrom)
+	h.mu.Lock()
+	silenceDurationMS := normalizeTurnDetectionSilenceDuration(h.cfg.TurnDetectionSilenceDurationMS)
+	h.mu.Unlock()
+	client, err := newASRClient(ctx, profile, language, generation, sessionID, silenceDurationMS, h.handleASREventFrom)
 	if err != nil {
 		h.finishASRReconnect(generation)
 		emitLog("listen.reconnect.failed", map[string]any{

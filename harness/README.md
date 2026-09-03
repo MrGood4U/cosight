@@ -16,7 +16,8 @@ Draw is not a model. Brain emits semantic draw actions and the renderer maps
 them to the existing transparent overlay implementation.
 
 Electron passes the configured visual refresh interval as `seeMinIntervalMs`
-in the start command. After a successful See response, the Harness keeps that
+and the per-result object limit as `seeMaxObjects` in the start command. After
+a successful See response, the Harness keeps that
 exact JPEG in memory as the visual baseline. Ordinary screen frames are
 compared locally against the baseline using a 64x36 luma sample grid; only a
 significant change starts a background See refresh. The same setting also

@@ -29,6 +29,18 @@ class FakeConversation:
 
 
 class QwenBridgeUnitTests(unittest.TestCase):
+    def test_see_max_objects_is_bounded(self):
+        self.assertEqual(bridge_module.normalize_see_max_objects(1), 1)
+        self.assertEqual(bridge_module.normalize_see_max_objects(999), 20)
+        self.assertEqual(bridge_module.normalize_see_max_objects(0), 1)
+        self.assertEqual(bridge_module.normalize_see_max_objects("invalid"), 8)
+
+    def test_turn_detection_silence_duration_is_bounded(self):
+        self.assertEqual(bridge_module.normalize_turn_detection_silence_duration(200), 200)
+        self.assertEqual(bridge_module.normalize_turn_detection_silence_duration(99999), 6000)
+        self.assertEqual(bridge_module.normalize_turn_detection_silence_duration(50), 200)
+        self.assertEqual(bridge_module.normalize_turn_detection_silence_duration("invalid"), 1600)
+
     def test_connection_command_returns_one_json_result_and_stops_the_probe(self):
         calls = []
 
@@ -272,11 +284,13 @@ class QwenBridgeUnitTests(unittest.TestCase):
             role={"outputLanguage": "zh-CN", "initiativeTimeoutSec": 12},
             imported_context={"messages": [{"text": "old"}]},
             conversation_summary={"topic": "current topic"},
+            see_max_objects=12,
         )
         self.assertIn("current topic", instructions)
         self.assertIn("Simplified Chinese", instructions)
         self.assertIn("透明", instructions)
         self.assertIn("屏幕视觉", instructions)
+        self.assertIn("最多关注 12 个", instructions)
         self.assertIn("没有启用语音输出", instructions)
 
     def test_tool_argument_parser_accepts_fenced_json_and_reports_malformed_input(self):

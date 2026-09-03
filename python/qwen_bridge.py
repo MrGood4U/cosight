@@ -40,6 +40,12 @@ except ImportError:
 
 DEFAULT_MODEL = "qwen3.5-omni-flash-realtime"
 DEFAULT_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS = 1600
+MIN_TURN_DETECTION_SILENCE_DURATION_MS = 200
+MAX_TURN_DETECTION_SILENCE_DURATION_MS = 6000
+DEFAULT_SEE_MAX_OBJECTS = 8
+MIN_SEE_MAX_OBJECTS = 1
+MAX_SEE_MAX_OBJECTS = 20
 DRAW_TOOL_NAME = drawing_ability.TOOL_NAME
 FOCUS_TOOL_NAME = drawing_ability.FOCUS_TOOL_NAME
 CANVAS_PROMPT_PATH = drawing_ability.PROMPT_PATH
@@ -78,6 +84,27 @@ KNOWLEDGE_RESPONSE_TIMEOUT_SECONDS = 2.5
 MAX_IMPORTED_CONTEXT_MESSAGES = 500
 MAX_IMPORTED_CONTEXT_EVENTS = 500
 MAX_IMPORTED_CONTEXT_CHARS = 50000
+
+
+def normalize_turn_detection_silence_duration(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS
+    return max(
+        MIN_TURN_DETECTION_SILENCE_DURATION_MS,
+        min(MAX_TURN_DETECTION_SILENCE_DURATION_MS, parsed),
+    )
+
+
+def normalize_see_max_objects(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SEE_MAX_OBJECTS
+    return max(MIN_SEE_MAX_OBJECTS, min(MAX_SEE_MAX_OBJECTS, parsed))
+
+
 CANVAS_TOOL = drawing_ability.TOOL
 CANVAS_TOOLS = drawing_ability.TOOLS
 WRITING_TOOL = writing_ability.TOOL
@@ -509,11 +536,18 @@ def build_session_instructions(
     imported_context: Optional[Dict[str, Any]] = None,
     conversation_summary: Optional[Dict[str, Any]] = None,
     knowledge_context: Optional[List[Dict[str, Any]]] = None,
+    see_max_objects: int = DEFAULT_SEE_MAX_OBJECTS,
 ) -> str:
+    see_max_objects = normalize_see_max_objects(see_max_objects)
+    screen_vision_instructions = (
+        SCREEN_VISION_INSTRUCTIONS_DISABLED
+        if not screen_vision_enabled
+        else f"当前会话启用了屏幕视觉输入；只根据实际收到的屏幕帧描述屏幕内容。每次视觉分析最多关注 {see_max_objects} 个最相关的物体或界面对象，不要穷举无关目标。"
+    )
     parts = [
         drawing_ability.load_instructions() if canvas_enabled else CANVAS_INSTRUCTIONS_DISABLED,
         writing_ability.load_instructions() if writing_enabled else WRITING_INSTRUCTIONS_DISABLED,
-        SCREEN_VISION_INSTRUCTIONS_DISABLED if not screen_vision_enabled else "当前会话启用了屏幕视觉输入；只根据实际收到的屏幕帧描述屏幕内容。",
+        screen_vision_instructions,
         LISTENING_INSTRUCTIONS_DISABLED if not listening_enabled else "当前会话启用了听觉输入；只根据实际收到的麦克风音频理解用户。",
         SPEAKING_INSTRUCTIONS_DISABLED if not speaking_enabled else "当前会话启用了语音输出；可以同时生成文字和语音回复。",
         build_role_instructions(role, canvas_enabled, writing_enabled, initiative_enabled, knowledge_context),
@@ -896,6 +930,7 @@ class OmniBridge:
         self.screen_vision_enabled = True
         self.listening_enabled = True
         self.initiative_enabled = False
+        self.see_max_objects = DEFAULT_SEE_MAX_OBJECTS
         self.role: Dict[str, Any] = {}
         self.knowledge_mode = False
         self.pending_knowledge_turns: Dict[str, Dict[str, Any]] = {}
@@ -1156,6 +1191,7 @@ class OmniBridge:
                     self.role,
                     self.imported_context,
                     self.conversation_summary,
+                    see_max_objects=self.see_max_objects,
                 ),
                 tools=self.session_tools(),
             )
@@ -1187,6 +1223,8 @@ class OmniBridge:
         listening_enabled: bool = True,
         speaking_enabled: bool = True,
         initiative_enabled: bool = False,
+        turn_detection_silence_duration_ms: Optional[int] = None,
+        see_max_objects: Optional[int] = None,
         role: Optional[Dict[str, Any]] = None,
         imported_context: Optional[Dict[str, Any]] = None,
         conversation_summary: Optional[Dict[str, Any]] = None,
@@ -1200,6 +1238,8 @@ class OmniBridge:
         model_name = (model or DEFAULT_MODEL).strip()
         self.model_name = model_name
         realtime_url = (url or DEFAULT_URL).strip()
+        turn_detection_silence_duration_ms = normalize_turn_detection_silence_duration(turn_detection_silence_duration_ms)
+        see_max_objects = normalize_see_max_objects(see_max_objects)
         diagnostics = diagnostic_label(model_name, realtime_url)
         debug_log("bridge.start", {
             "model": model_name,
@@ -1209,6 +1249,8 @@ class OmniBridge:
             "listeningEnabled": listening_enabled,
             "speakingEnabled": speaking_enabled,
             "initiativeEnabled": initiative_enabled,
+            "turnDetectionSilenceDurationMs": turn_detection_silence_duration_ms,
+            "seeMaxObjects": see_max_objects,
             "initiativeTimeoutSec": role_initiative_timeout_seconds(role) if initiative_enabled else None,
             "roleId": role.get("id") if isinstance(role, dict) else None,
             "canvasEnabled": canvas_enabled,
@@ -1235,6 +1277,7 @@ class OmniBridge:
         self.screen_vision_enabled = bool(screen_vision_enabled)
         self.listening_enabled = bool(listening_enabled)
         self.initiative_enabled = bool(initiative_enabled)
+        self.see_max_objects = see_max_objects
         self.role = role if isinstance(role, dict) else {}
         self.knowledge_mode = normalize_knowledge_mode(self.role.get("knowledgeMode")) == "rag"
         with self.knowledge_lock:
@@ -1277,6 +1320,7 @@ class OmniBridge:
                 "input_audio_transcription_model": "qwen3-asr-flash-realtime",
                 "enable_turn_detection": True,
                 "turn_detection_type": "server_vad",
+                "turn_detection_silence_duration_ms": turn_detection_silence_duration_ms,
                 "instructions": build_session_instructions(
                     canvas_enabled,
                     writing_enabled,
@@ -1287,6 +1331,7 @@ class OmniBridge:
                     role,
                     self.imported_context,
                     self.conversation_summary,
+                    see_max_objects=see_max_objects,
                 ),
                 "tools": self.session_tools(),
             }
@@ -1334,6 +1379,7 @@ class OmniBridge:
                         self.role,
                         self.imported_context,
                         self.conversation_summary,
+                        see_max_objects=self.see_max_objects,
                     ),
                     tools=self.session_tools(),
                 )
@@ -1600,6 +1646,7 @@ class OmniBridge:
                         self.role,
                         self.imported_context,
                         self.conversation_summary,
+                        see_max_objects=self.see_max_objects,
                     ),
                     tools=self.session_tools(),
                 )
@@ -1646,6 +1693,8 @@ def main() -> None:
                         listening_enabled=bool(command.get("listeningEnabled", True)),
                         speaking_enabled=bool(command.get("speakingEnabled", True)),
                         initiative_enabled=bool(command.get("initiativeEnabled", False)),
+                        turn_detection_silence_duration_ms=command.get("turnDetectionSilenceDurationMs"),
+                        see_max_objects=command.get("seeMaxObjects"),
                         role=command.get("role"),
                         imported_context=command.get("importedContext"),
                         conversation_summary=command.get("conversationSummary"),

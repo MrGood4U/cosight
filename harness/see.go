@@ -359,6 +359,7 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 	}()
 	startedAt := time.Now()
 	profile := h.cfg.Models["see"]
+	maxObjects := normalizeSeeMaxObjects(h.cfg.SeeMaxObjects)
 	emitLog("see.model.started", map[string]any{
 		"requestId":              future.requestID,
 		"model":                  profile.Name,
@@ -366,12 +367,13 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		"reason":                 future.reason,
 		"minIntervalMs":          h.cfg.SeeMinIntervalMS,
 		"changeThresholdPercent": h.cfg.SeeChangeThreshold,
+		"maxObjects":             maxObjects,
 		"maxTokens":              nil,
 	})
 	// QwenCloud recommends omitting max_tokens for JSON output so the model
 	// cannot truncate the response in the middle of a JSON document.
-	content, err := h.callJSONModel(profile, "see", future.requestID, seeSystemPrompt(), []any{
-		map[string]any{"type": "text", "text": seeUserPrompt()},
+	content, err := h.callJSONModel(profile, "see", future.requestID, seeSystemPrompt(maxObjects), []any{
+		map[string]any{"type": "text", "text": seeUserPrompt(maxObjects)},
 		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64," + frameBase64}},
 	}, nil)
 	seeDurationMS := durationMS(startedAt)
@@ -408,6 +410,14 @@ func (h *harness) analyzeSee(future *seeFuture, frameBase64 string) {
 		h.logActionFailure("see", "", "SEE_INVALID_JSON", err.Error())
 		future.resolve(nil, err)
 		return
+	}
+	if len(modelOutput.Objects) > maxObjects {
+		emitLog("see.parse.truncated", map[string]any{
+			"requestId":   future.requestID,
+			"objectCount": len(modelOutput.Objects),
+			"maxObjects":  maxObjects,
+		})
+		modelOutput.Objects = modelOutput.Objects[:maxObjects]
 	}
 	emitLog("see.parse.completed", map[string]any{
 		"requestId":          future.requestID,

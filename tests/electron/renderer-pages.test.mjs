@@ -126,6 +126,32 @@ test('Abilities page exposes the See bounding-box debug toggle', () => {
   assert.match(markup, /ability-card-configurable/)
 })
 
+test('Abilities page exposes the editable See object limit', () => {
+  const markup = renderToStaticMarkup(React.createElement(AbilitiesPage, {
+    seeMaxObjects: 12,
+    setSeeMaxObjects: noop,
+    t,
+  }))
+  assert.match(markup, /abilities\.seeMaxObjects/)
+  assert.match(markup, /id="see-max-objects"/)
+  assert.match(markup, /min="1"/)
+  assert.match(markup, /max="20"/)
+  assert.match(markup, /value="12"/)
+})
+
+test('Abilities page exposes the listening silence duration input', () => {
+  const markup = renderToStaticMarkup(React.createElement(AbilitiesPage, {
+    turnDetectionSilenceDurationMs: 1600,
+    setTurnDetectionSilenceDurationMs: noop,
+    t,
+  }))
+  assert.match(markup, /id="turn-detection-silence-duration"/)
+  assert.match(markup, /type="number"/)
+  assert.match(markup, /min="200"/)
+  assert.match(markup, /max="6000"/)
+  assert.match(markup, /value="1600"/)
+})
+
 test('Role editor renders independent languages and conditional visual/drawing/initiative fields', () => {
   const draft = {
     ...emptyRoleDraft(),
@@ -420,4 +446,6 @@ test('Chat page preserves text input as a shared transcript channel and disables
 test('AppShell passes the text submit handler through to ChatPage', () => {
   assert.match(appShellSource, /transcript, assistantDraft, setTranscript, submitTextMessage, textInput/)
   assert.match(appShellSource, /seeBboxDebugEnabled, setSeeBboxDebugEnabled/)
+  assert.match(appShellSource, /seeMaxObjects, setSeeMaxObjects/)
+  assert.match(appShellSource, /turnDetectionSilenceDurationMs, setTurnDetectionSilenceDurationMs/)
 })

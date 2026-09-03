@@ -11,6 +11,9 @@ export const HARNESS_MODULES = ['brain', 'listen', 'speak', 'see']
 export const DEFAULT_ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing']
 export const DEFAULT_SCREEN_VISION_INTERVAL_SECONDS = 5
 export const DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD = 8
+export const DEFAULT_SEE_MAX_OBJECTS = 8
+export const SEE_MAX_OBJECTS_MIN = 1
+export const SEE_MAX_OBJECTS_MAX = 20
 
 export const DEFAULT_HARNESS_SETTINGS = {
   seeMinIntervalMs: 5000,
@@ -74,6 +77,12 @@ export function normalizeScreenVisionChangeThreshold(value) {
   const parsed = Number.parseInt(String(value), 10)
   if (!Number.isFinite(parsed)) return DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD
   return Math.min(100, Math.max(1, parsed))
+}
+
+export function normalizeSeeMaxObjects(value) {
+  const parsed = Number.parseInt(String(value), 10)
+  if (!Number.isFinite(parsed)) return DEFAULT_SEE_MAX_OBJECTS
+  return Math.min(SEE_MAX_OBJECTS_MAX, Math.max(SEE_MAX_OBJECTS_MIN, parsed))
 }
 
 export function configuredHarnessModels(config) {

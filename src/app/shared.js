@@ -18,6 +18,10 @@ export const DEFAULT_KNOWLEDGE_MODE = 'prompt'
 export const DEFAULT_KNOWLEDGE_RETRIEVAL_MODE = 'fast'
 export const DEFAULT_SCREEN_VISION_INTERVAL_SECONDS = 5
 export const DEFAULT_SCREEN_VISION_CHANGE_THRESHOLD = 8
+export const DEFAULT_SEE_MAX_OBJECTS = 8
+export const SEE_MAX_OBJECTS_STORAGE_KEY = 'cosight.seeMaxObjects'
+export const SEE_MAX_OBJECTS_MIN = 1
+export const SEE_MAX_OBJECTS_MAX = 20
 export const DEFAULT_HARNESS_SETTINGS = {
   seeMinIntervalMs: 5000,
   recentConversationCount: 20,
@@ -30,12 +34,28 @@ export const SEE_BBOX_DEBUG_ENABLED = false
 export const SEE_BBOX_DEBUG_STORAGE_KEY = 'cosight.seeBboxDebugEnabled'
 export const DEFAULT_OUTPUT_VOLUME = 48
 export const OUTPUT_VOLUME_STORAGE_KEY = 'cosight.outputVolume'
+export const DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS = 1600
+export const TURN_DETECTION_SILENCE_DURATION_STORAGE_KEY = 'cosight.turnDetectionSilenceDurationMs'
+export const TURN_DETECTION_SILENCE_DURATION_MIN_MS = 200
+export const TURN_DETECTION_SILENCE_DURATION_MAX_MS = 6000
 export const AUDIO_INPUT_MODES = ['microphone', 'system']
 export const DEFAULT_AUDIO_INPUT_MODE = 'microphone'
 export const AUDIO_INPUT_MODE_STORAGE_KEY = 'cosight.audioInputMode'
 
 export function normalizeAudioInputMode(value) {
   return AUDIO_INPUT_MODES.includes(value) ? value : DEFAULT_AUDIO_INPUT_MODE
+}
+
+export function normalizeSeeMaxObjects(value) {
+  const parsed = Number.parseInt(String(value), 10)
+  if (!Number.isFinite(parsed)) return DEFAULT_SEE_MAX_OBJECTS
+  return Math.min(SEE_MAX_OBJECTS_MAX, Math.max(SEE_MAX_OBJECTS_MIN, parsed))
+}
+
+export function normalizeTurnDetectionSilenceDuration(value) {
+  const parsed = Number.parseInt(String(value), 10)
+  if (!Number.isFinite(parsed)) return DEFAULT_TURN_DETECTION_SILENCE_DURATION_MS
+  return Math.min(TURN_DETECTION_SILENCE_DURATION_MAX_MS, Math.max(TURN_DETECTION_SILENCE_DURATION_MIN_MS, parsed))
 }
 
 export const ROLE_ABILITY_IDS = ['screenVision', 'listening', 'speaking', 'drawing', 'initiative']

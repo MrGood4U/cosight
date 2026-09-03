@@ -170,8 +170,12 @@ userInput 中的 currentUserText、conversationSummary、recentTurns、latestVis
 	return builder.String()
 }
 
-func seeSystemPrompt() string {
-	return `你是 Cosight 的 See 视觉结构化模块。只分析当前图片，不回答用户问题。
+func seeSystemPrompt(maxObjects ...int) string {
+	objectLimit := defaultSeeMaxObjects
+	if len(maxObjects) > 0 {
+		objectLimit = normalizeSeeMaxObjects(maxObjects[0])
+	}
+	return fmt.Sprintf(`你是 Cosight 的 See 视觉结构化模块。只分析当前图片，不回答用户问题。
 请参考 Qwen-VL 官方 grounding/OCR 示例，使用 bbox_2d 字段，不要使用 bbox 对象。
 只输出一个 JSON 对象，不要 Markdown 代码块，不要解释 JSON 之外的内容。
 输出格式必须是：
@@ -181,17 +185,21 @@ func seeSystemPrompt() string {
 1. bbox_2d 严格按 Qwen-VL 官方约定表示 [x_min, y_min, x_max, y_max]，相对于完整图片，使用 0 到 1000 的归一化坐标，不要输出 width/height。
 2. 先判断整幅图片正在呈现的场景。scene 必须用 1 到 2 句简洁中文概括当前画面、前景应用或主要活动；只描述图片中有可靠依据的内容，不要猜测用户意图。
 3. objects 用于可识别的 UI 控件、物品和其他可能与用户问题相关的目标；textBlocks 用于图片中可读的文字。
-4. objects 最多返回 8 个，按与当前共享屏幕交互和用户可能问题的相关性排序；超过 8 个时只保留最相关的 8 个。
+4. objects 最多返回 %d 个，按与当前共享屏幕交互和用户可能问题的相关性排序；超过 %d 个时只保留最相关的 %d 个。
 5. 优先返回前景应用窗口、可交互控件、关键文字和明显目标；忽略背景、装饰、重复图标和无关小物体。
 6. objectId 使用 obj_1、obj_2 等稳定的短 ID；没有可靠的目标不要猜测，objects 或 textBlocks 可以为空。
 7. 看不清文字时不要猜测文字内容；confidence 使用 0 到 1 的数字。
 8. 只返回完成任务所需的最少信息；禁止输出推理过程、解释、冗余场景描述、重复目标、无关属性或长篇 vision_summary。
 9. vision_summary 只能是一句很短的关键状态；没有关键状态时返回空字符串。scene 无法可靠判断时返回空字符串。objects 和 textBlocks 没有内容时必须返回空数组 []，不要省略字段，也不要返回 null。
-10. 没有补充属性时 attributes 必须返回空对象 {}。即使没有识别到任何目标，也必须返回完整 JSON 对象，例如 {"scene":"","vision_summary":"","objects":[],"textBlocks":[]}。`
+10. 没有补充属性时 attributes 必须返回空对象 {}。即使没有识别到任何目标，也必须返回完整 JSON 对象，例如 {"scene":"","vision_summary":"","objects":[],"textBlocks":[]}。`, objectLimit, objectLimit, objectLimit)
 }
 
-func seeUserPrompt() string {
-	return "分析当前共享屏幕：先用 1 到 2 句简洁中文概括整幅画面的 scene，再提取与当前交互和用户可能问题相关的 UI 对象、文字和关键状态，最多返回 8 个最相关的 objects。优先前景应用窗口、可交互控件、关键文字和明显目标，忽略背景、装饰、重复图标和无关小物体。使用 Qwen-VL 官方 [x_min,y_min,x_max,y_max] 格式输出 JSON。禁止冗余描述、推理过程和无关字段；超过 8 个时只保留最相关的目标；无法可靠判断场景时 scene 返回空字符串；没有对象或文字时分别返回 objects:[] 和 textBlocks:[]，不要返回 null 或省略字段。字段使用 vision_summary，不要使用没有模块前缀的 summary。"
+func seeUserPrompt(maxObjects ...int) string {
+	objectLimit := defaultSeeMaxObjects
+	if len(maxObjects) > 0 {
+		objectLimit = normalizeSeeMaxObjects(maxObjects[0])
+	}
+	return fmt.Sprintf("分析当前共享屏幕：先用 1 到 2 句简洁中文概括整幅画面的 scene，再提取与当前交互和用户可能问题相关的 UI 对象、文字和关键状态，最多返回 %d 个最相关的 objects。优先前景应用窗口、可交互控件、关键文字和明显目标，忽略背景、装饰、重复图标和无关小物体。使用 Qwen-VL 官方 [x_min,y_min,x_max,y_max] 格式输出 JSON。禁止冗余描述、推理过程和无关字段；超过 %d 个时只保留最相关的目标；无法可靠判断场景时 scene 返回空字符串；没有对象或文字时分别返回 objects:[] 和 textBlocks:[]，不要返回 null 或省略字段。字段使用 vision_summary，不要使用没有模块前缀的 summary。", objectLimit, objectLimit)
 }
 
 func roleListeningLanguage(role map[string]any) string {

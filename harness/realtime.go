@@ -150,8 +150,9 @@ type asrClient struct {
 	generation uint64
 }
 
-func newASRClient(ctx context.Context, profile modelProfile, language string, generation uint64, sessionID string, onEvent func(*asrClient, map[string]any)) (*asrClient, error) {
+func newASRClient(ctx context.Context, profile modelProfile, language string, generation uint64, sessionID string, silenceDurationMS int, onEvent func(*asrClient, map[string]any)) (*asrClient, error) {
 	startedAt := time.Now()
+	silenceDurationMS = normalizeTurnDetectionSilenceDuration(silenceDurationMS)
 	emitLog("listen.connect.started", map[string]any{
 		"model":    profile.Name,
 		"language": language,
@@ -192,7 +193,7 @@ func newASRClient(ctx context.Context, profile modelProfile, language string, ge
 			"turn_detection": map[string]any{
 				"type":                "server_vad",
 				"threshold":           0.2,
-				"silence_duration_ms": 400,
+				"silence_duration_ms": silenceDurationMS,
 			},
 		},
 	}
