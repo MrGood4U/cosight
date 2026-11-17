@@ -157,6 +157,7 @@ export default {
   language: {
     english: 'English',
     chinese: '中文',
+    russian: 'Русский',
   },
   abilities: {
     kicker: '智能体能力',

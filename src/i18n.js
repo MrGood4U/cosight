@@ -1,14 +1,17 @@
 import enUS from './locales/en-US.js'
 import zhCN from './locales/zh-CN.js'
+import ruRU from './locales/ru-RU.js'
 
 export const LANGUAGE_OPTIONS = [
   { value: 'en-US', key: 'language.english' },
   { value: 'zh-CN', key: 'language.chinese' },
+  { value: 'ru-RU', key: 'language.russian' },
 ]
 
 const MESSAGES = {
   'en-US': enUS,
   'zh-CN': zhCN,
+  'ru-RU': ruRU,
 }
 
 function readPath(messages, key) {
